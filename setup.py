@@ -91,7 +91,8 @@ class BuildMedia(Command):
         pass
 
     def run(self):
-        retcode = subprocess.call(['./contrib/internal/build-media.py'])
+        retcode = subprocess.call([
+            sys.executable, './contrib/internal/build-media.py'])
 
         if retcode != 0:
             raise RuntimeError('Failed to build media files')
@@ -168,9 +169,9 @@ setup(name=PACKAGE_NAME,
       },
       cmdclass=cmdclasses,
       install_requires=[
-          'Django>=1.4.6,<1.5',
+          'Django>=1.4.8,<1.5',
           'django_evolution>=0.6.9',
-          'Djblets>=0.7.17,<0.7.18',
+          'Djblets>=0.7.21,<0.8',
           'django-pipeline>=1.2.24,<1.3',
           'docutils',
           markdown_requirement,
@@ -179,7 +180,7 @@ setup(name=PACKAGE_NAME,
           'Pygments>=1.5',
           'python-dateutil==1.5',
           'python-memcached',
-          'pytz>=2012h',
+          'pytz',
           'recaptcha-client',
       ],
       dependency_links = [

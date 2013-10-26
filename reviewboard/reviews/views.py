@@ -746,8 +746,9 @@ def all_review_requests(request,
             return _render_permission_denied(request)
     else:
         local_site = None
-    datagrid = ReviewRequestDataGrid(request,
-        ReviewRequest.objects.public(request.user,
+    datagrid = ReviewRequestDataGrid(
+        request,
+        ReviewRequest.objects.public(user=request.user,
                                      status=None,
                                      local_site=local_site,
                                      with_counts=True),
@@ -922,13 +923,15 @@ def submitter(request,
     datagrid = ReviewRequestDataGrid(request,
         ReviewRequest.objects.from_user(username, status=None,
                                         with_counts=True,
-                                        local_site=local_site),
+                                        local_site=local_site,
+                                        filter_private=True),
         _("%s's review requests") % username,
         local_site=local_site)
 
     return datagrid.render_to_response(template_name, extra_context={
         'show_profile': user.is_profile_visible(request.user),
         'viewing_user': user,
+        'groups': user.review_groups.accessible(request.user),
     })
 
 
@@ -989,6 +992,12 @@ def diff(request,
     file_attachments = list(review_request.get_file_attachments())
     screenshots = list(review_request.get_screenshots())
 
+    try:
+        latest_changedesc = \
+            review_request.changedescs.filter(public=True).latest()
+    except ChangeDescription.DoesNotExist:
+        latest_changedesc = None
+
     # Compute the lists of comments based on filediffs and interfilediffs.
     # We do this using the 'through' table so that we can select_related
     # the reviews and comments.
@@ -1008,9 +1017,18 @@ def diff(request,
         else:
             comments[key] = [comment]
 
+    close_description = None
+
+    if latest_changedesc and 'status' in latest_changedesc.fields_changed:
+        status = latest_changedesc.fields_changed['status']['new'][0]
+
+        if status in (ReviewRequest.DISCARDED, ReviewRequest.SUBMITTED):
+            close_description = latest_changedesc.text
+
     return view_diff(
          request, diffset, interdiffset, template_name=template_name,
          extra_context=make_review_request_context(request, review_request, {
+            'close_description': close_description,
             'diffsets': diffsets,
             'latest_diffset': latest_diffset,
             'review': pending_review,
