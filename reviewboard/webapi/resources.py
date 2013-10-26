@@ -3272,11 +3272,20 @@ class RepositoryResource(WebAPIResource):
                 'type': str,
                 'description': 'The username used to access the repository.',
             },
+            'access_users': {
+                'type': str,
+                'descriptions': 'Access users',
+            },
+            'access_groups': {
+                'type': str,
+                'descriptions': 'Access groups',
+            },
         },
     )
     def create(self, request, name, path, tool, trust_host=False,
                bug_tracker=None, encoding=None, mirror_path=None,
                password=None, public=None, raw_file_url=None, username=None,
+               access_users='', access_groups='',
                local_site_name=None, *args, **kwargs):
         """Creates a repository.
 
@@ -3338,6 +3347,27 @@ class RepositoryResource(WebAPIResource):
             repository.extra_data['cert'] = cert
 
         repository.save()
+
+        access_users = access_users.split(',')
+        access_groups = access_groups.split(',')
+
+        for username in access_users:
+            if not username:
+                continue
+            try:
+                user = User.objects.get(username=username)
+                repository.users.add(user)
+            except User.DoesNotExist:
+                raise
+
+        for group_name in access_groups:
+            if not group_name:
+                continue
+            try:
+                group = Group.objects.get(name=group_name)
+                repository.review_groups.add(group)
+            except Group.DoesNotExist:
+                raise
 
         return 201, {
             self.item_result_key: repository,
