@@ -159,7 +159,7 @@ class DiffSetManager(models.Manager):
                 else:
                     source_rev = f.origInfo
 
-            dest_file = os.path.join(basedir, f.newFile).replace("\\", "/")
+            dest_file = os.path.join(basedir, f.newFile.decode("utf-8")).replace("\\", "/")
 
             if f.deleted:
                 status = FileDiff.DELETED
@@ -194,7 +194,7 @@ class DiffSetManager(models.Manager):
             if f2.startswith("/"):
                 filename = f2
             else:
-                filename = os.path.join(basedir, f2).replace("\\", "/")
+                filename = os.path.join(basedir, f2.decode("utf-8")).replace("\\", "/")
 
             if limit_to is not None and filename not in limit_to:
                 # This file isn't actually needed for the diff, so save
