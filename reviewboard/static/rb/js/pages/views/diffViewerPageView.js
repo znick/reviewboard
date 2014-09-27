@@ -1,201 +1,4 @@
 /*
- * Displays the file index for the diffs on a page.
- *
- * The file page lists the names of the files, as well as a little graph
- * icon showing the relative size and complexity of a file, a list of chunks
- * (and their types), and the number of lines added and removed.
- */
-var DiffFileIndexView = Backbone.View.extend({
-    chunkTemplate: _.template(
-        '<a href="#<%= chunkID %>" class="<%= className %>"> </a>'
-    ),
-
-    events: {
-        'click a': '_onAnchorClicked'
-    },
-
-    /*
-     * Initializes the view.
-     */
-    initialize: function() {
-        this._$items = null;
-        this._iconInsertColor = null;
-        this._iconReplaceColor = null;
-        this._iconDeleteColor = null;
-    },
-
-    /*
-     * Renders the view to the page.
-     *
-     * This will grab the list of items and precompute the colors used in
-     * the complexity icons.
-     */
-    render: function() {
-        var $iconColor = $('<div/>').appendTo(document.body);
-
-        this._$items = this.$('tr');
-
-        $iconColor[0].className = 'diff-changes-icon-insert';
-        this._iconInsertColor = $iconColor.css('color');
-
-        $iconColor[0].className = 'diff-changes-icon-replace';
-        this._iconReplaceColor = $iconColor.css('color');
-
-        $iconColor[0].className = 'diff-changes-icon-delete';
-        this._iconDeleteColor = $iconColor.css('color');
-
-        $iconColor.remove();
-
-        return this;
-    },
-
-    /*
-     * Adds a loaded diff to the index.
-     *
-     * The reserved entry for the diff will be populated with a link to the
-     * diff, and information about the diff.
-     */
-    addDiff: function(index, diffReviewableView) {
-        var $item = $(this._$items[index])
-            .removeClass('loading');
-
-        if (diffReviewableView.$el.hasClass('diff-error')) {
-            this._renderDiffError($item);
-        } else {
-            this._renderDiffEntry($item, diffReviewableView);
-        }
-    },
-
-    /*
-     * Renders a diff loading error.
-     *
-     * An error icon will be displayed in place of the typical complexity
-     * icon.
-     */
-    _renderDiffError: function($item) {
-        $('<div class="rb-icon rb-icon-warning"/>')
-            .appendTo($item.find('.diff-file-icon'));
-    },
-
-    /*
-     * Renders the display of a loaded diff.
-     */
-    _renderDiffEntry: function($item, diffReviewableView) {
-        var $table = diffReviewableView.$el,
-            fileDeleted = $item.hasClass('deleted-file'),
-            fileAdded = $item.hasClass('new-file'),
-            linesEqual = $table.data('lines-equal'),
-            numDeletes = 0,
-            numInserts = 0,
-            numReplaces = 0,
-            chunksList = [];
-
-        if (fileAdded) {
-            numInserts = 1;
-        } else if (fileDeleted) {
-            numDeletes = 1;
-        } else if ($item.hasClass('binary-file')) {
-            numReplaces = 1;
-        } else {
-            _.each($table.children('tbody'), function(chunk) {
-                var numRows = chunk.rows.length,
-                    $chunk = $(chunk);
-
-                if ($chunk.hasClass('delete')) {
-                    numDeletes += numRows;
-                } else if ($chunk.hasClass('insert')) {
-                    numInserts += numRows;
-                } else if ($chunk.hasClass('replace')) {
-                    numReplaces += numRows;
-                } else {
-                    return;
-                }
-
-                chunksList.push(this.chunkTemplate({
-                    chunkID: chunk.id.substr(5),
-                    className: chunk.className
-                }));
-            }, this);
-
-            /* Add clickable blocks for each diff chunk. */
-            $item.find('.diff-chunks').html(chunksList.join(''));
-        }
-
-        /* Render the complexity icon. */
-        this._renderComplexityIcon($item, numInserts, numDeletes, numReplaces,
-                                   linesEqual + numDeletes + numInserts +
-                                   numReplaces);
-
-        this.listenTo(diffReviewableView, 'chunkDimmed chunkUndimmed',
-                      function(chunkID) {
-            this.$('a[href="#' + chunkID + '"]').toggleClass('dimmed');
-        });
-    },
-
-    /*
-     * Renders the icon showing the general complexity of the diff.
-     *
-     * This icon is a pie graph showing the percentage of adds vs deletes
-     * vs replaces. The size of the white inner radius is a relative indicator
-     * of how large the change is for the file. Smaller inner radiuses indicate
-     * much larger changes, whereas larger radiuses represent smaller changes.
-     *
-     * Think of the inner radius as the unchanged lines.
-     */
-    _renderComplexityIcon: function($item, numInserts, numDeletes, numReplaces,
-                                    totalLines) {
-        function clampValue(val) {
-            return val === 0 ? 0 : Math.max(val, minValue);
-        }
-
-        var numTotal = numInserts + numDeletes + numReplaces,
-            minValue = numTotal * 0.15;
-
-        $('<div/>')
-            .width(20)
-            .height(20)
-            .appendTo($item.find('.diff-file-icon'))
-            .plot(
-                [
-                    {
-                        color: this._iconInsertColor,
-                        data: clampValue(numInserts)
-                    },
-                    {
-                        color: this._iconDeleteColor,
-                        data: clampValue(numDeletes)
-                    },
-                    {
-                        color: this._iconReplaceColor,
-                        data: clampValue(numReplaces)
-                    }
-                ],
-                {
-                    series: {
-                        pie: {
-                            show: true,
-                            innerRadius: 0.5 *
-                                         ((totalLines - numTotal) / totalLines),
-                            radius: 0.8
-                        }
-                    }
-                }
-            );
-    },
-
-    /*
-     * Handler for when an anchor is clicked.
-     *
-     * Gets the name of the target and emits anchorClicked.
-     */
-    _onAnchorClicked: function(e) {
-        e.preventDefault();
-
-        this.trigger('anchorClicked', e.target.href.split('#')[1]);
-    }
-});
-
-/*
  * Manages the diff viewer page.
  *
  * This provides functionality for the diff viewer page for managing the
@@ -218,7 +21,8 @@ RB.DiffViewerPageView = RB.ReviewablePageView.extend({
         'dDjn.': '_selectNextDiff',
         '[x': '_selectPreviousComment',
         ']c': '_selectNextComment',
-        '\x0d': '_recenterSelected'
+        '\x0d': '_recenterSelected',
+        'rR': '_createComment'
     },
 
     events: _.extend({
@@ -232,24 +36,71 @@ RB.DiffViewerPageView = RB.ReviewablePageView.extend({
     initialize: function() {
         var url;
 
-        _.super(this).initialize.call(this);
+        _super(this).initialize.call(this);
 
         this._selectedAnchorIndex = -1;
         this._$anchors = $();
         this._$controls = null;
         this._diffReviewableViews = [];
         this._diffFileIndexView = null;
+        this._highlightedChunk = null;
+
+        this.listenTo(this.model.get('files'), 'update', this._setFiles);
 
         /* Check to see if there's an anchor we need to scroll to. */
         url = document.location.toString();
         this._startAtAnchorName = (url.match('#') ? url.split('#')[1] : null);
+
+        this.router = new Backbone.Router({
+            routes: {
+                ':revision/': 'revision',
+                ':revision/?page=:page': 'revision'
+            }
+        });
+        this.listenTo(this.router, 'route:revision', function(revision, page) {
+            var parts;
+
+            if (page === undefined) {
+                page = 1;
+            } else {
+                page = parseInt(page, 10);
+            }
+
+            if (revision.indexOf('-') === -1) {
+                this._loadRevision(0, parseInt(revision, 10), page);
+            } else {
+                parts = revision.split('-', 2);
+                this._loadRevision(parseInt(parts[0], 10),
+                                   parseInt(parts[1], 10),
+                                   page);
+            }
+        });
+
+        /*
+         * If we have "index_header" or a file+line hash in the location,
+         * strip it off. Backbone's router makes use of the hash to try to
+         * be backwards compatible with browsers that don't support the
+         * history API, but we don't care about those, and if it's present
+         * when we call start(), it will change the page's URL to be
+         * /diff/index_header, which isn't a valid URL.
+         */
+        if (window.location.hash) {
+            window.location.hash = '';
+        }
+
+        Backbone.history.start({
+            pushState: true,
+            hashChange: false,
+            root: this.options.reviewRequestData.reviewURL + 'diff/',
+            silent: true
+        });
     },
 
     /*
      * Removes the view from the page.
      */
     remove: function() {
-        _.super(this).remove.call(this);
+        _super(this).remove.call(this);
 
         this._diffFileIndexView.remove();
     },
@@ -258,28 +109,137 @@ RB.DiffViewerPageView = RB.ReviewablePageView.extend({
      * Renders the page and begins loading all diffs.
      */
     render: function() {
-        var $reviewRequest;
+        var $reviewRequest,
+            numDiffs = this.model.get('numDiffs'),
+            revisionModel = this.model.get('revision');
 
-        _.super(this).render.call(this);
+        _super(this).render.call(this);
 
         $reviewRequest = this.$('.review-request');
 
         this._$controls = $reviewRequest.find('ul.controls');
 
-        this._diffFileIndexView = new DiffFileIndexView({
-            el: $('#diff_index')
+        this._diffFileIndexView = new RB.DiffFileIndexView({
+            el: $('#diff_index'),
+            collection: this.model.get('files')
         });
         this._diffFileIndexView.render();
 
         this.listenTo(this._diffFileIndexView, 'anchorClicked',
                       this.selectAnchorByName);
 
+        this._diffRevisionLabelView = new RB.DiffRevisionLabelView({
+            el: $('#diff_revision_label'),
+            model: revisionModel
+        });
+        this._diffRevisionLabelView.render();
+
+        this.listenTo(this._diffRevisionLabelView, 'revisionSelected',
+                      this._onRevisionSelected);
+
+        if (numDiffs > 1) {
+            this._diffRevisionSelectorView = new RB.DiffRevisionSelectorView({
+                el: $('#diff_revision_selector'),
+                model: revisionModel,
+                numDiffs: numDiffs
+            });
+            this._diffRevisionSelectorView.render();
+
+            this.listenTo(this._diffRevisionSelectorView, 'revisionSelected',
+                          this._onRevisionSelected);
+        }
+
+        this._commentsHintModel = this.options.commentsHint;
+        this._commentsHintView = new RB.DiffCommentsHintView({
+            el: $('#diff_comments_hint'),
+            model: this.model.get('commentsHint')
+        });
+        this._commentsHintView.render();
+        this.listenTo(this._commentsHintView, 'revisionSelected',
+                      this._onRevisionSelected);
+
+        this._paginationView1 = new RB.PaginationView({
+            el: $('#pagination1'),
+            model: this.model.get('pagination')
+        });
+        this._paginationView1.render();
+        this.listenTo(this._paginationView1, 'pageSelected',
+                      _.partial(this._onPageSelected, false));
+
+        this._paginationView2 = new RB.PaginationView({
+            el: $('#pagination2'),
+            model: this.model.get('pagination')
+        });
+        this._paginationView2.render();
+        this.listenTo(this._paginationView2, 'pageSelected',
+                      _.partial(this._onPageSelected, true));
+
         $('#diffs').bindClass(RB.UserSession.instance,
                               'diffsShowExtraWhitespace', 'ewhl');
 
-        $.funcQueue("diff_files").start();
+        this._setFiles();
+
+        $('#diff-details').removeClass('loading');
 
         return this;
+    },
+
+    _fileEntryTemplate: _.template([
+        '<div class="diff-container">',
+        ' <div class="diff-box">',
+        '  <table class="sidebyside loading <% if (newfile) { %>newfile<% } %>"',
+        '         id="file_container_<%- id %>">',
+        '   <thead>',
+        '    <tr class="filename-row">',
+        '     <th><%- depotFilename %></th>',
+        '    </tr>',
+        '   </thead>',
+        '   <tbody>',
+        '    <tr><td><pre>&nbsp;</pre></td></tr>',
+        '   </tbody>',
+        '  </table>',
+        ' </div>',
+        '</div>'
+    ].join('')),
+
+    /* Template for code line link anchor */
+    anchorTemplate: _.template(
+    '<a name="<%- anchorName %>" class="highlight-anchor"></a>'),
+
+    /*
+     * Set the displayed files.
+     *
+     * This will replace the displayed files with a set of pending entries,
+     * queue loads for each file, and start the queue.
+     */
+    _setFiles: function() {
+        var files = this.model.get('files'),
+            $diffs = $('#diffs').empty();
+
+        this._highlightedChunk = null;
+
+        files.each(function(file) {
+            var filediff = file.get('filediff'),
+                interfilediff = file.get('interfilediff'),
+                interdiffRevision = null;
+
+            $diffs.append(this._fileEntryTemplate(file.attributes));
+
+            if (interfilediff) {
+                interdiffRevision = interfilediff.revision;
+            } else if (file.get('forceInterdiff')) {
+                interdiffRevision = file.get('forceInterdiffRevision');
+            }
+
+            this.queueLoadDiff(filediff.id,
+                               filediff.revision,
+                               interfilediff ? interfilediff.id : null,
+                               interdiffRevision,
+                               file.get('index'),
+                               file.get('commentCounts'));
+        }, this);
+
+        $.funcQueue('diff_files').start();
     },
 
     /*
@@ -330,11 +290,25 @@ RB.DiffViewerPageView = RB.ReviewablePageView.extend({
      * pulled from the server.
      */
     _renderFileDiff: function(diffReviewable) {
-        var diffReviewableView = new RB.DiffReviewableView({
-                el: $('#file' + diffReviewable.get('fileDiffID')),
-                model: diffReviewable
-            }),
-            $anchor;
+        var elementName = 'file' + diffReviewable.get('fileDiffID'),
+            $el = $('#' + elementName),
+            diffReviewableView,
+            $anchor,
+            urlSplit;
+
+        if ($el.length === 0) {
+            /*
+             * The user changed revsions before the file finished loading, and
+             * the target element no longer exists. Just return.
+             */
+            $.funcQueue('diff_files').next();
+            return;
+        }
+
+        diffReviewableView = new RB.DiffReviewableView({
+            el: $el,
+            model: diffReviewable
+        });
 
         this._diffFileIndexView.addDiff(this._diffReviewableViews.length,
                                         diffReviewableView);
@@ -350,6 +324,10 @@ RB.DiffViewerPageView = RB.ReviewablePageView.extend({
             this.selectAnchorByName(name, false);
         });
 
+        this.listenTo(diffReviewableView, 'moveFlagClicked', function(line) {
+            this.selectAnchor(this.$('a[target=' + line + ']'));
+        });
+
         /* We must rebuild this every time. */
         this._updateAnchors(diffReviewableView.$el);
 
@@ -361,6 +339,26 @@ RB.DiffViewerPageView = RB.ReviewablePageView.extend({
         if (this._startAtAnchorName) {
             /* See if we've loaded the anchor the user wants to start at. */
             $anchor = $('a[name="' + this._startAtAnchorName + '"]');
+
+            /*
+             * Some anchors are added by the template (such as those at
+             * comment locations), but not all are. If the anchor isn't found,
+             * but the URL hash is indicating that we want to start at a
+             * location within this file, add the anchor.
+             * */
+            urlSplit = this._startAtAnchorName.split(',');
+            if ($anchor.length === 0 &&
+                urlSplit.length === 2 &&
+                elementName === urlSplit[0]) {
+                $anchor = $(this.anchorTemplate({
+                    anchorName: this._startAtAnchorName
+                }));
+
+                diffReviewableView.$el
+                    .find("tr[line='" + urlSplit[1] + "']")
+                        .addClass('highlight-anchor')
+                        .append($anchor);
+            }
 
             if ($anchor.length !== 0) {
                 this.selectAnchor($anchor);
@@ -413,6 +411,7 @@ RB.DiffViewerPageView = RB.ReviewablePageView.extend({
      * Highlights a chunk bound to an anchor element.
      */
     _highlightAnchor: function($anchor) {
+        this._highlightedChunk = $anchor.parents('tbody:first, thead:first');
         RB.ChunkHighlighterView.highlight(
             $anchor.parents('tbody:first, thead:first'));
     },
@@ -451,6 +450,10 @@ RB.DiffViewerPageView = RB.ReviewablePageView.extend({
              i >= 0 && i < this._$anchors.length;
              i += dir) {
             $anchor = $(this._$anchors[i]);
+
+            if ($anchor.parents('tr').hasClass('dimmed')) {
+                continue;
+            }
 
             if (((anchorTypes & this.ANCHOR_COMMENT) &&
                  $anchor.hasClass('comment-anchor')) ||
@@ -522,6 +525,35 @@ RB.DiffViewerPageView = RB.ReviewablePageView.extend({
         this.selectAnchor($(this._$anchors[this._selectedAnchorIndex]));
     },
 
+   /*
+    * Creates a comment for a chunk of a diff
+    */
+    _createComment: function() {
+        var chunkID = this._highlightedChunk[0].id,
+            chunkElement = document.getElementById(chunkID),
+            lineElements,
+            beginLineNum,
+            beginNode,
+            endLineNum,
+            endNode;
+
+        if (chunkElement) {
+            lineElements = chunkElement.getElementsByTagName('tr');
+            beginLineNum = lineElements[0].getAttribute("line");
+            beginNode = lineElements[0].cells[2];
+            endLineNum = lineElements[lineElements.length-1]
+                .getAttribute("line");
+            endNode = lineElements[lineElements.length-1].cells[2];
+
+            _.each(this._diffReviewableViews, function(diffReviewableView) {
+                if ($.contains(diffReviewableView.el, beginNode)){
+                    diffReviewableView.createComment(beginLineNum, endLineNum,
+                                                     beginNode, endNode);
+                }
+            });
+        }
+    },
+
     /*
      * Toggles the display of diff chunks that only contain whitespace changes.
      */
@@ -546,6 +578,81 @@ RB.DiffViewerPageView = RB.ReviewablePageView.extend({
         RB.UserSession.instance.toggleAttr('diffsShowExtraWhitespace');
 
         return false;
+    },
+
+    /*
+     * Callback for when a new revision is selected.
+     *
+     * This supports both single revisions and interdiffs. If `base` is 0, a
+     * single revision is selected. If not, the interdiff between `base` and
+     * `tip` will be shown.
+     *
+     * This will always implicitly navigate to page 1 of any paginated diffs.
+     */
+    _onRevisionSelected: function(revisions) {
+        var base = revisions[0],
+            tip = revisions[1];
+
+        if (base === 0) {
+            this.router.navigate(tip + '/', {trigger: true});
+        } else {
+            this.router.navigate(base + '-' + tip + '/', {trigger: true});
+        }
+    },
+
+    /*
+     * Callback for when a new page is selected.
+     *
+     * Navigates to the same revision with a different page number.
+     */
+    _onPageSelected: function(scroll, page) {
+        var revision = this.model.get('revision'),
+            url = revision.get('revision');
+
+        if (revision.get('interdiffRevision') !== null) {
+            url += '-' + revision.get('interdiffRevision');
+        }
+
+        if (scroll) {
+            this.selectAnchorByName('index_header', true);
+        }
+
+        url += '/?page=' + page;
+        this.router.navigate(url, {trigger: true});
+    },
+
+    /*
+     * Load a given revision.
+     *
+     * This supports both single revisions and interdiffs. If `base` is 0, a
+     * single revision is selected. If not, the interdiff between `base` and
+     * `tip` will be shown.
+     */
+    _loadRevision: function(base, tip, page) {
+        var reviewRequestURL = _.result(this.reviewRequest, 'url'),
+            contextURL = reviewRequestURL + 'diff-context/',
+            $downloadLink = $('#download-diff');
+
+        if (base === 0) {
+            contextURL += '?revision=' + tip;
+            $downloadLink.show();
+        } else {
+            contextURL += '?revision=' + base + '&interdiff-revision=' + tip;
+            $downloadLink.hide();
+        }
+
+        if (page !== 1) {
+            contextURL += '&page=' + page;
+        }
+
+        $.ajax(contextURL).done(_.bind(function(rsp) {
+            _.each(this._diffReviewableViews, function(diffReviewableView) {
+                diffReviewableView.remove();
+            });
+            this._diffReviewableViews = [];
+
+            this.model.set(this.model.parse(rsp.diff_context));
+        }, this));
     }
 });
 _.extend(RB.DiffViewerPageView.prototype, RB.KeyBindingsMixin);

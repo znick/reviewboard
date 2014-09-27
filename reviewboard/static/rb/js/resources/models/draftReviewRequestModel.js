@@ -11,7 +11,8 @@ RB.DraftReviewRequest = RB.BaseResource.extend(_.defaults({
         changeDescription: null,
         dependsOn: [],
         description: null,
-        public: null,
+        'public': null,
+        richText: false,
         summary: null,
         targetGroups: [],
         targetPeople: [],
@@ -20,11 +21,25 @@ RB.DraftReviewRequest = RB.BaseResource.extend(_.defaults({
 
     rspNamespace: 'draft',
     listKey: 'draft',
+    supportsExtraData: true,
 
     expandedFields: ['depends_on', 'target_people', 'target_groups'],
 
+    extraQueryArgs: {
+        'force-text-type': 'markdown'
+    },
+
     url: function() {
         return this.get('parentObject').get('links').draft.href;
+    },
+
+    /*
+     * Creates a FileAttachment object for this draft.
+     */
+    createFileAttachment: function(attributes) {
+        return new RB.DraftFileAttachment(_.defaults({
+            parentObject: this
+        }, attributes));
     },
 
     /*
@@ -44,7 +59,7 @@ RB.DraftReviewRequest = RB.BaseResource.extend(_.defaults({
 
                 if (validationError) {
                     if (_.isFunction(options.error)) {
-                        options.error.call(context, {
+                        options.error.call(context, this, {
                             errorText: validationError
                         });
                     }
@@ -52,7 +67,7 @@ RB.DraftReviewRequest = RB.BaseResource.extend(_.defaults({
                     this.save(
                         _.defaults({
                             data: {
-                                public: 1
+                                'public': 1
                             }
                         }, options),
                         context);
@@ -65,20 +80,24 @@ RB.DraftReviewRequest = RB.BaseResource.extend(_.defaults({
     },
 
     validate: function(attrs, options) {
+        var strings = RB.DraftReviewRequest.strings;
+
         if (options.publishing) {
             if (attrs.targetGroups.length === 0 &&
                 attrs.targetPeople.length === 0) {
-                return RB.DraftReviewRequest.strings.REVIEWERS_REQUIRED;
+                return strings.REVIEWERS_REQUIRED;
             }
 
             if ($.trim(attrs.summary) === '') {
-                return RB.DraftReviewRequest.strings.SUMMARY_REQUIRED;
+                return strings.SUMMARY_REQUIRED;
             }
 
             if ($.trim(attrs.description) === '') {
-                return RB.DraftReviewRequest.strings.DESCRIPTION_REQUIRED;
+                return strings.DESCRIPTION_REQUIRED;
             }
         }
+
+        return _super(this).validate.call(this, attrs, options);
     },
 
     parseResourceData: function(rsp) {
@@ -88,7 +107,8 @@ RB.DraftReviewRequest = RB.BaseResource.extend(_.defaults({
             changeDescription: rsp.changedescription,
             dependsOn: rsp.depends_on,
             description: rsp.description,
-            public: rsp.public,
+            'public': rsp['public'],
+            richText: rsp.text_type === 'markdown',
             summary: rsp.summary,
             targetGroups: rsp.target_groups,
             targetPeople: rsp.target_people,

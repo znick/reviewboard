@@ -1,4 +1,8 @@
-from reviewboard.diffviewer.differ import Differ
+from __future__ import unicode_literals
+
+from django.utils.six.moves import range
+
+from reviewboard.diffviewer.differ import Differ, DiffCompatVersion
 
 
 class MyersDiffer(Differ):
@@ -254,7 +258,7 @@ class MyersDiffer(Differ):
                 down_max -= 1
 
             # Extend the forward path
-            for k in xrange(down_max, down_min - 1, -2):
+            for k in range(down_max, down_min - 1, -2):
                 tlo = down_vector[self.downoff + k - 1]
                 thi = down_vector[self.downoff + k + 1]
 
@@ -296,7 +300,7 @@ class MyersDiffer(Differ):
             else:
                 up_max -= 1
 
-            for k in xrange(up_max, up_min - 1, -2):
+            for k in range(up_max, up_min - 1, -2):
                 tlo = up_vector[self.upoff + k - 1]
                 thi = up_vector[self.upoff + k + 1]
 
@@ -361,16 +365,15 @@ class MyersDiffer(Differ):
                 if best > 0:
                     return ret_x, ret_y, False, True
 
-            continue  # XXX
-
-            # If we've reached or gone past the max cost, just give up now
-            # and report the halfway point between our best results.
-            if cost >= max_cost:
+            if (cost >= max_cost and
+                self.compat_version >= DiffCompatVersion.MYERS_SMS_COST_BAIL):
+                # We've reached or gone past the max cost. Just give up now
+                # and report the halfway point between our best results.
                 fx_best = bx_best = 0
 
                 # Find the forward diagonal that maximized x + y
                 fxy_best = -1
-                for d in xrange(down_max, down_min - 1, -2):
+                for d in range(down_max, down_min - 1, -2):
                     x = min(down_vector[self.downoff + d], a_upper)
                     y = x - d
 
@@ -384,7 +387,7 @@ class MyersDiffer(Differ):
 
                 # Find the backward diagonal that minimizes x + y
                 bxy_best = self.max_lines
-                for d in xrange(up_max, up_min - 1, -2):
+                for d in range(up_max, up_min - 1, -2):
                     x = max(a_lower, up_vector[self.upoff + d])
                     y = x - d
 
@@ -408,7 +411,7 @@ class MyersDiffer(Differ):
     def _find_diagonal(self, minimum, maximum, k, best, diagoff, vector,
                        vdiff_func, check_x_range, check_y_range,
                        discard_index, k_offset, cost):
-        for d in xrange(maximum, minimum - 1, -2):
+        for d in range(maximum, minimum - 1, -2):
             dd = d - k
             x = vector[diagoff + d]
             y = x - d
@@ -582,7 +585,7 @@ class MyersDiffer(Differ):
         def scan_run(discards, i, length, index_func):
             consec = 0
 
-            for j in xrange(length):
+            for j in range(length):
                 index = index_func(i, j)
                 discard = discards[index]
 
@@ -613,7 +616,6 @@ class MyersDiffer(Differ):
 
                     # Find the end of this run of discardable lines and count
                     # how many are provisionally discardable.
-                    #for j in xrange(i, data.length):
                     j = i
                     while j < data.length:
                         if discards[j] == self.DISCARD_NONE:

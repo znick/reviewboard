@@ -1,7 +1,7 @@
-describe('resources/models/FileAttachment', function() {
+suite('rb/resources/models/FileAttachment', function() {
     beforeEach(function() {
         parentObject = new RB.BaseResource({
-            public: true
+            'public': true
         });
 
         model = new RB.FileAttachment({

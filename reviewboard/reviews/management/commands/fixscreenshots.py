@@ -1,8 +1,10 @@
+from __future__ import unicode_literals
+
 import os
 
 from django.core.management.base import NoArgsCommand
 
-from reviews.models import Screenshot
+from reviewboard.reviews.models import Screenshot
 
 
 class Command(NoArgsCommand):

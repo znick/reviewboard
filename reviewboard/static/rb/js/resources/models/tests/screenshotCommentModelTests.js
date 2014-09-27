@@ -1,4 +1,4 @@
-describe('resources/models/ScreenshotComment', function() {
+suite('rb/resources/models/ScreenshotComment', function() {
     var strings = RB.ScreenshotComment.strings,
         model;
 
@@ -7,7 +7,7 @@ describe('resources/models/ScreenshotComment', function() {
         model = new RB.ScreenshotComment({
             screenshotID: 16,
             parentObject: new RB.BaseResource({
-                public: true
+                'public': true
             }),
             x: 0,
             y: 0,
@@ -24,6 +24,7 @@ describe('resources/models/ScreenshotComment', function() {
                     id: 42,
                     issue_opened: true,
                     issue_status: 'resolved',
+                    text_type: 'markdown',
                     text: 'foo',
                     x: 10,
                     y: 20,
@@ -41,6 +42,7 @@ describe('resources/models/ScreenshotComment', function() {
             expect(data.id).toBe(42);
             expect(data.issueOpened).toBe(true);
             expect(data.issueStatus).toBe(RB.BaseComment.STATE_RESOLVED);
+            expect(data.richText).toBe(true);
             expect(data.text).toBe('foo');
             expect(data.x).toBe(10);
             expect(data.y).toBe(20);

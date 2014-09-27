@@ -1,6 +1,8 @@
+from __future__ import print_function, unicode_literals
+
 from django.conf import settings
 from django.contrib.sites.models import Site
-
+from django.utils import six
 from djblets.siteconfig.models import SiteConfiguration
 
 from reviewboard import get_version_string
@@ -29,27 +31,27 @@ def init_siteconfig(app, created_models, verbosity, db=None, **kwargs):
         # Check the Site to see if this is a brand new installation. If so,
         # don't talk to the user about upgrades or other such nonsense.
         if Site not in created_models:
-            print "*** Migrating settings from settings_local.py to the " \
-                  "database."
+            print("*** Migrating settings from settings_local.py to the "
+                  "database.")
 
         migrate_settings(siteconfig)
 
         if Site not in created_models:
-            print "*** If you have previously configured Review Board " \
-                  "through a "
-            print "*** settings_local.py file, please ensure that the " \
-                  "migration "
-            print "*** was successful by verifying your settings at"
-            print "*** %s://%s%sadmin/settings/" % \
-                (siteconfig.get("site_domain_method"),
-                 site.domain,
-                 settings.SITE_ROOT)
+            print("*** If you have previously configured Review Board "
+                  "through a ")
+            print("*** settings_local.py file, please ensure that the "
+                  "migration ")
+            print("*** was successful by verifying your settings at")
+            print("*** %s://%s%sadmin/settings/" %
+                  (siteconfig.get("site_domain_method"),
+                   site.domain,
+                   settings.SITE_ROOT))
 
         siteconfig.version = new_version
         siteconfig.save()
     elif siteconfig.version != new_version:
-        print "Upgrading Review Board from %s to %s" % (siteconfig.version,
-                                                        new_version)
+        print("Upgrading Review Board from %s to %s" % (siteconfig.version,
+                                                        new_version))
         siteconfig.version = new_version
         siteconfig.save()
 
@@ -80,7 +82,7 @@ def migrate_settings(siteconfig):
     Migrates any settings we want in the database from the settings file.
     """
     # Convert everything in the table.
-    for siteconfig_key, setting_data in migration_table.iteritems():
+    for siteconfig_key, setting_data in six.iteritems(migration_table):
         if isinstance(setting_data, dict):
             setting_key = setting_data['key']
             serialize_func = setting_data.get('serialize_func', None)
@@ -91,7 +93,7 @@ def migrate_settings(siteconfig):
         default = defaults.get(siteconfig_key, None)
         value = getattr(settings, setting_key, default)
 
-        if serialize_func and callable(serialize_func):
+        if serialize_func and six.callable(serialize_func):
             value = serialize_func(value)
 
         siteconfig.set(siteconfig_key, value)

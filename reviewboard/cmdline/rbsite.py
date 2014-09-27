@@ -1,5 +1,7 @@
 #!/usr/bin/env python
 
+from __future__ import print_function, unicode_literals
+
 import getpass
 import imp
 import os
@@ -9,37 +11,23 @@ import re
 import shutil
 import sys
 import textwrap
+import subprocess
 import warnings
 from optparse import OptionGroup, OptionParser
-from random import choice
+from random import choice as random_choice
 
-from reviewboard import get_version_string
+from django.db.utils import OperationalError
+from django.utils import six
+from django.utils.six.moves import input
+from django.utils.six.moves.urllib.request import urlopen
 
+from reviewboard import get_manual_url, get_version_string
 
-DOCS_BASE = "http://www.reviewboard.org/docs/manual/dev/"
 
 SITELIST_FILE_UNIX = "/etc/reviewboard/sites"
 
 
-# See if GTK is a possibility.
-try:
-    # Disable the gtk warning we might hit. This is because pygtk will
-    # yell if it can't access X.
-    warnings.simplefilter("ignore")
-
-    import pygtk
-    pygtk.require('2.0')
-    import gtk
-    can_use_gtk = True
-
-    gtk.init_check()
-except:
-    can_use_gtk = False
-
-# Reset the warnings so we don't ignore everything.
-warnings.resetwarnings()
-
-# But then ignore the PendingDeprecationWarnings that we'll get from Django.
+# Ignore the PendingDeprecationWarnings that we'll get from Django.
 # See bug 1683.
 warnings.filterwarnings("ignore", category=PendingDeprecationWarning)
 
@@ -125,9 +113,7 @@ class Dependencies(object):
 
     @classmethod
     def has_modules(cls, names):
-        """
-        Returns whether or not one of the specified modules is installed.
-        """
+        """Returns True if one of the specified modules is installed."""
         for name in names:
             try:
                 __import__(name)
@@ -152,6 +138,7 @@ class Site(object):
         self.options = options
 
         # State saved during installation
+        self.company = None
         self.domain_name = None
         self.web_server_port = None
         self.site_root = None
@@ -171,6 +158,7 @@ class Site(object):
         self.admin_user = None
         self.admin_password = None
         self.reenter_admin_password = None
+        self.send_support_usage_stats = True
 
     def rebuild_site_directory(self):
         """
@@ -185,7 +173,7 @@ class Site(object):
         self.mkdir(os.path.join(self.install_dir, "conf"))
 
         self.mkdir(os.path.join(self.install_dir, "tmp"))
-        os.chmod(os.path.join(self.install_dir, "tmp"), 0777)
+        os.chmod(os.path.join(self.install_dir, "tmp"), 0o777)
 
         self.mkdir(os.path.join(self.install_dir, "data"))
 
@@ -193,19 +181,36 @@ class Site(object):
         self.mkdir(media_dir)
         self.mkdir(static_dir)
 
-        # TODO: In the future, support changing ownership of these
-        #       directories.
-        self.mkdir(os.path.join(media_dir, "uploaded"))
-        self.mkdir(os.path.join(media_dir, "uploaded", "images"))
-        self.mkdir(os.path.join(media_dir, "ext"))
+        uploaded_dir = os.path.join(media_dir, 'uploaded')
+
+        self.mkdir(uploaded_dir)
+
+        # Assuming this is an upgrade, the 'uploaded' directory should
+        # already have the right permissions for writing, so use that as a
+        # template for all the new directories.
+        writable_st = os.stat(uploaded_dir)
+
+        writable_dirs = [
+            os.path.join(uploaded_dir, 'images'),
+            os.path.join(uploaded_dir, 'files'),
+            os.path.join(media_dir, 'ext'),
+            os.path.join(static_dir, 'ext'),
+        ]
+
+        for writable_dir in writable_dirs:
+            self.mkdir(writable_dir)
+
+            try:
+                os.chown(writable_dir, writable_st.st_uid, writable_st.st_gid)
+            except OSError:
+                # The user didn't have permission to change the ownership,
+                # they'll have to do this manually later.
+                pass
 
         self.link_pkg_dir(
             "reviewboard",
             "htdocs/errordocs",
             os.path.join(self.install_dir, "htdocs", "errordocs"))
-
-        rb_djblets_src = "htdocs/static/djblets"
-        rb_djblets_dest = os.path.join(static_dir, "djblets")
 
         self.link_pkg_dir("reviewboard",
                           "htdocs/static/lib",
@@ -216,16 +221,9 @@ class Site(object):
         self.link_pkg_dir("reviewboard",
                           "htdocs/static/admin",
                           os.path.join(static_dir, 'admin'))
-
-        # Link from Djblets if available.
-        if pkg_resources.resource_exists("djblets", "media"):
-            self.link_pkg_dir("djblets", "static", rb_djblets_dest)
-        elif pkg_resources.resource_exists("reviewboard", rb_djblets_src):
-            self.link_pkg_dir("reviewboard", rb_djblets_src,
-                              rb_djblets_dest)
-        else:
-            ui.error("Unable to find the Djblets media path. Make sure "
-                     "Djblets is installed and try this again.")
+        self.link_pkg_dir("djblets",
+                          "htdocs/static/djblets",
+                          os.path.join(static_dir, 'djblets'))
 
         # Remove any old media directories from old sites
         self.unlink_media_dir(os.path.join(media_dir, 'admin'))
@@ -259,9 +257,8 @@ class Site(object):
         ])
 
         for dirname in (static_dir, media_dir):
-            fp = open(os.path.join(dirname, '.htaccess'), 'w')
-            fp.write(htaccess)
-            fp.close()
+            with open(os.path.join(dirname, '.htaccess'), 'w') as fp:
+                fp.write(htaccess)
 
     def setup_settings(self):
         # Make sure that we have our settings_local.py in our path for when
@@ -269,15 +266,35 @@ class Site(object):
         sys.path.insert(0, os.path.join(self.abs_install_dir, "conf"))
         os.environ['DJANGO_SETTINGS_MODULE'] = 'reviewboard.settings'
 
+    def get_apache_version(self):
+        try:
+            apache_version = subprocess.check_output(['httpd', '-v'])
+            # Extract the major and minor version from the string
+            m = re.search('Apache\/(\d+).(\d+)', apache_version)
+            if m:
+                return m.group(1, 2)
+            else:
+                # Raise a generic regex error so we go to the
+                # exception handler to pick a default
+                raise re.error
+        except:
+            # Version check returned an error or the regular
+            # expression did not match. Guess 2.2 for historic
+            # compatibility
+            return (2, 2)
+
+    def generate_cron_files(self):
+        self.process_template("cmdline/conf/cron.conf.in",
+                              os.path.join(self.install_dir, "conf",
+                                           "cron.conf"))
+
     def generate_config_files(self):
         web_conf_filename = ""
         enable_fastcgi = False
         enable_wsgi = False
 
         if self.web_server_type == "apache":
-            if self.python_loader == "modpython":
-                web_conf_filename = "apache-modpython.conf"
-            elif self.python_loader == "fastcgi":
+            if self.python_loader == "fastcgi":
                 web_conf_filename = "apache-fastcgi.conf"
                 enable_fastcgi = True
             elif self.python_loader == "wsgi":
@@ -286,6 +303,15 @@ class Site(object):
             else:
                 # Should never be reached.
                 assert False
+
+            # Get the Apache version so we know which
+            # authorization directive to use
+            apache_version = self.get_apache_version()
+            if apache_version[0] >= 2 and apache_version[1] >= 4:
+                self.apache_auth = "Require all granted"
+            else:
+                self.apache_auth = "Allow from all"
+
         elif self.web_server_type == "lighttpd":
             web_conf_filename = "lighttpd.conf"
             enable_fastcgi = True
@@ -298,22 +324,21 @@ class Site(object):
 
         self.process_template("cmdline/conf/%s.in" % web_conf_filename,
                               os.path.join(conf_dir, web_conf_filename))
-        self.process_template("cmdline/conf/search-cron.conf.in",
-                              os.path.join(conf_dir, "search-cron.conf"))
+        self.generate_cron_files()
         if enable_fastcgi:
             fcgi_filename = os.path.join(htdocs_dir, "reviewboard.fcgi")
             self.process_template("cmdline/conf/reviewboard.fcgi.in",
                                   fcgi_filename)
-            os.chmod(fcgi_filename, 0755)
+            os.chmod(fcgi_filename, 0o755)
         elif enable_wsgi:
             wsgi_filename = os.path.join(htdocs_dir, "reviewboard.wsgi")
             self.process_template("cmdline/conf/reviewboard.wsgi.in",
                                   wsgi_filename)
-            os.chmod(wsgi_filename, 0755)
+            os.chmod(wsgi_filename, 0o755)
 
         # Generate a secret key based on Django's code.
         secret_key = ''.join([
-            choice('abcdefghijklmnopqrstuvwxyz0123456789!@#$%^&*(-_=+)')
+            random_choice('abcdefghijklmnopqrstuvwxyz0123456789!@#$%^&*(-_=+)')
             for i in range(50)
         ])
 
@@ -365,6 +390,7 @@ class Site(object):
         fp.write("SITE_ROOT = '%s'\n" % self.site_root)
         fp.write("FORCE_SCRIPT_NAME = ''\n")
         fp.write("DEBUG = False\n")
+        fp.write("ALLOWED_HOSTS = ['%s']\n" % (self.domain_name or '*'))
         fp.close()
 
         self.setup_settings()
@@ -378,7 +404,23 @@ class Site(object):
         if not allow_input:
             params.append("--noinput")
 
-        self.run_manage_command("syncdb", params)
+        while True:
+            try:
+                self.run_manage_command("syncdb", params)
+                break
+            except OperationalError as e:
+                ui.error('There was an error synchronizing the database. '
+                         'Make sure the database is created and has the '
+                         'appropriate permissions, and then continue.'
+                         '\n'
+                         'Details: %s'
+                         % e,
+                         force_wait=True)
+            except Exception:
+                # This is an unexpected error, and we don't know how to
+                # handle this. Bubble it up.
+                raise
+
         self.run_manage_command("registerscmtools")
 
     def migrate_database(self):
@@ -388,7 +430,7 @@ class Site(object):
         self.run_manage_command("evolve", ["--noinput", "--execute"])
 
     def get_static_media_upgrade_needed(self):
-        """Determines whether or not a static media config upgrade is needed."""
+        """Determines if a static media config upgrade is needed."""
         from djblets.siteconfig.models import SiteConfiguration
 
         siteconfig = SiteConfiguration.objects.get_current()
@@ -399,8 +441,20 @@ class Site(object):
                 (pkg_resources.parse_version(siteconfig.version) <
                  pkg_resources.parse_version("1.7")))
 
+    def get_diff_dedup_needed(self):
+        """Determines if there's likely duplicate diff data stored."""
+        from reviewboard.diffviewer.models import FileDiff
+
+        try:
+            return FileDiff.objects.unmigrated().count() > 0
+        except:
+            # Very likely, there was no diffviewer_filediff.diff_hash_id
+            # column, indicating a pre-1.7 database. We want to assume
+            # a dedup is needed.
+            return True
+
     def get_settings_upgrade_needed(self):
-        """Determines whether or not a settings upgrade is needed."""
+        """Determines if a settings upgrade is needed."""
         try:
             import settings_local
 
@@ -536,13 +590,30 @@ class Site(object):
 
         os.chdir(cwd)
 
+    def register_support_page(self):
+        from reviewboard.admin.support import get_register_support_url
+
+        url = get_register_support_url(force_is_admin=True)
+
+        try:
+            urlopen(url, timeout=5).read()
+        except:
+            # There may be a number of issues preventing this from working,
+            # such as a restricted network environment or a server issue on
+            # our side. This isn't a catastrophic issue, so don't bother them
+            # about it.
+            pass
+
     def run_manage_command(self, cmd, params=None):
         cwd = os.getcwd()
         os.chdir(self.abs_install_dir)
 
         try:
-            from django.core.management import execute_manager, get_commands
-            import reviewboard.settings
+            from django.core.management import (execute_from_command_line,
+                                                get_commands)
+
+            os.environ.setdefault('DJANGO_SETTINGS_MODULE',
+                                  'reviewboard.settings')
 
             if not params:
                 params = []
@@ -560,16 +631,19 @@ class Site(object):
                 # Yes, this is a bit of a hack.
                 from django.core.management import _commands
 
-                for f in os.listdir(commands_dir):
+                for command in os.listdir(commands_dir):
                     module_globals = {}
-                    execfile(os.path.join(commands_dir, f), module_globals)
+                    filename = os.path.join(commands_dir, command)
+                    with open(filename) as f:
+                        code = compile(f.read(), filename, 'exec')
+                        exec(code, module_globals)
 
                     if 'Command' in module_globals:
                         name = os.path.splitext(f)[0]
                         _commands[name] = module_globals['Command']()
 
-            execute_manager(reviewboard.settings, [__file__, cmd] + params)
-        except ImportError, e:
+            execute_from_command_line([__file__, cmd] + params)
+        except ImportError as e:
             ui.error("Unable to execute the manager command %s: %s" %
                      (cmd, e))
 
@@ -610,9 +684,17 @@ class Site(object):
         """
         Generates a file from a template.
         """
-        domain_name_escaped = self.domain_name.replace(".", "\\.")
+        domain_name = self.domain_name or ''
+        domain_name_escaped = domain_name.replace(".", "\\.")
         template = pkg_resources.resource_string("reviewboard", template_path)
         sitedir = os.path.abspath(self.install_dir).replace("\\", "/")
+
+        if self.site_root:
+            site_root = self.site_root
+            site_root_noslash = site_root[1:-1]
+        else:
+            site_root = '/'
+            site_root_noslash = ''
 
         # Check if this is a .exe.
         if (hasattr(sys, "frozen") or         # new py2exe
@@ -626,14 +708,17 @@ class Site(object):
             'rbsite': rbsite_path,
             'port': self.web_server_port,
             'sitedir': sitedir,
-            'sitedomain': self.domain_name,
+            'sitedomain': domain_name,
             'sitedomain_escaped': domain_name_escaped,
             'siteid': self.site_id,
-            'siteroot': self.site_root,
-            'siteroot_noslash': self.site_root[1:-1],
+            'siteroot': site_root,
+            'siteroot_noslash': site_root_noslash,
         }
 
-        template = re.sub("@([a-z_]+)@", lambda m: data.get(m.group(1)),
+        if hasattr(self, 'apache_auth'):
+            data['apache_auth'] = self.apache_auth
+
+        template = re.sub(r"@([a-z_]+)@", lambda m: data.get(m.group(1)),
                           template)
 
         fp = open(dest_filename, "w")
@@ -678,19 +763,17 @@ class SiteList(object):
             # permissions for user but read and execute
             # only for others.
             try:
-                os.makedirs(os.path.dirname(self.path), 0755)
+                os.makedirs(os.path.dirname(self.path), 0o755)
             except:
                 # We shouldn't consider this an abort-worthy error
                 # We'll warn the user and just complete setup
-                print "WARNING: Could not save site to sitelist %s" % self.path
+                print("WARNING: Could not save site to sitelist %s" %
+                      self.path)
                 return
 
-        f = open(self.path, "w")
-
-        for site in ordered_sites:
-            f.write("%s\n" % site)
-
-        f.close()
+        with open(self.path, 'w') as f:
+            for site in ordered_sites:
+                f.write("%s\n" % site)
 
 
 class UIToolkit(object):
@@ -760,7 +843,7 @@ class UIToolkit(object):
         """
         raise NotImplementedError
 
-    def error(self, text, done_func=None):
+    def error(self, text, force_wait=False, done_func=None):
         """
         Displays a block of error text to the user.
         """
@@ -804,14 +887,15 @@ class ConsoleUI(UIToolkit):
         if on_show_func:
             on_show_func()
 
-        print
-        print
-        print self.header_wrapper.fill(text)
+        print()
+        print()
+        print(self.header_wrapper.fill(text))
 
         return True
 
     def prompt_input(self, page, prompt, default=None, password=False,
-                     normalize_func=None, save_obj=None, save_var=None):
+                     yes_no=False, optional=False, normalize_func=None,
+                     save_obj=None, save_var=None):
         """
         Prompts the user for some text. This may contain a default value.
         """
@@ -821,31 +905,68 @@ class ConsoleUI(UIToolkit):
         if not page:
             return
 
-        if default:
+        if yes_no:
+            if default:
+                prompt = '%s [Y/n]' % prompt
+            else:
+                prompt = '%s [y/N]' % prompt
+                default = False
+        elif default:
             self.text(page, "The default is %s" % default)
             prompt = "%s [%s]" % (prompt, default)
+        elif optional:
+            prompt = '%s (optional)' % prompt
 
-        print
+        print()
 
         prompt += ": "
         value = None
 
         while not value:
             if password:
-                value = getpass.getpass(prompt)
+                temp_value = getpass.getpass(prompt)
+                if save_var.startswith('reenter'):
+                    if not self.confirm_reentry(save_obj, save_var,
+                                                temp_value):
+                        self.error("Passwords must match.")
+                        continue
+                value = temp_value
             else:
-                value = raw_input(prompt)
+                value = input(prompt)
 
             if not value:
                 if default:
                     value = default
+                elif optional:
+                    break
+
+            if yes_no:
+                if isinstance(value, bool):
+                    # This came from the 'default' value.
+                    norm_value = value
                 else:
-                    self.error("You must answer this question.")
+                    assert isinstance(value, six.string_types)
+                    norm_value = value.lower()
+
+                if norm_value not in (True, False, 'y', 'n', 'yes', 'no'):
+                    self.error('Must specify one of Y/y/yes or N/n/no.')
+                    value = None
+                    continue
+                else:
+                    value = norm_value in (True, 'y', 'yes')
+                    break
+            elif not value:
+                self.error("You must answer this question.")
 
         if normalize_func:
             value = normalize_func(value)
 
         setattr(save_obj, save_var, value)
+
+    def confirm_reentry(self, obj, reenter_var, value):
+        first_var = reenter_var.replace('reenter_', '')
+        first_entry = getattr(site, first_var)
+        return first_entry == value
 
     def prompt_choice(self, page, prompt, choices,
                       save_obj=None, save_var=None):
@@ -868,7 +989,7 @@ class ConsoleUI(UIToolkit):
             description = ''
             enabled = True
 
-            if isinstance(choice, basestring):
+            if isinstance(choice, six.string_types):
                 text = choice
             elif len(choice) == 2:
                 text, enabled = choice
@@ -881,13 +1002,13 @@ class ConsoleUI(UIToolkit):
                 valid_choices.append(text)
                 i += 1
 
-        print
+        print()
 
         prompt += ": "
         choice = None
 
         while not choice:
-            choice = raw_input(prompt)
+            choice = input(prompt)
 
             if choice not in valid_choices:
                 try:
@@ -913,12 +1034,12 @@ class ConsoleUI(UIToolkit):
             return
 
         if leading_newline:
-            print
+            print()
 
         if wrap:
-            print self.text_wrapper.fill(text)
+            print(self.text_wrapper.fill(text))
         else:
-            print '    %s' % text
+            print('    %s' % text)
 
     def disclaimer(self, page, text):
         self.text(page, 'NOTE: %s' % text)
@@ -946,425 +1067,23 @@ class ConsoleUI(UIToolkit):
         """
         sys.stdout.write("%s ... " % text)
         func()
-        print "OK"
+        print("OK")
 
-    def error(self, text, done_func=None):
+    def error(self, text, force_wait=False, done_func=None):
         """
         Displays a block of error text to the user.
         """
-        print
-        print self.error_wrapper.fill(text)
+        print()
+
+        for text_block in text.split('\n'):
+            print(self.error_wrapper.fill(text_block))
+
+        if force_wait:
+            print()
+            input('Press Enter to continue')
 
         if done_func:
             done_func()
-
-
-class GtkUI(UIToolkit):
-    """
-    A UI toolkit that uses GTK to display a wizard.
-    """
-    def __init__(self):
-        self.pages = []
-        self.page_stack = []
-
-        self.window = gtk.Window(gtk.WINDOW_TOPLEVEL)
-        self.window.set_title("Review Board Site Installer")
-        self.window.set_default_size(300, 550)
-        self.window.set_border_width(0)
-        self.window.set_resizable(False)
-        self.window.set_type_hint(gtk.gdk.WINDOW_TYPE_HINT_DIALOG)
-        self.window.set_position(gtk.WIN_POS_CENTER_ALWAYS)
-
-        self.window.set_icon_list(*[
-            gtk.gdk.pixbuf_new_from_file(
-                pkg_resources.resource_filename(
-                    "reviewboard", "htdocs/static/rb/images/" + filename))
-            for filename in ["favicon.png", "logo.png"]
-        ])
-
-        vbox = gtk.VBox(False, 0)
-        vbox.show()
-        self.window.add(vbox)
-
-        self.notebook = gtk.Notebook()
-        self.notebook.show()
-        vbox.pack_start(self.notebook, True, True, 0)
-        self.notebook.set_show_border(False)
-        self.notebook.set_show_tabs(False)
-
-        sep = gtk.HSeparator()
-        sep.show()
-        vbox.pack_start(sep, False, True, 0)
-
-        self.bbox = gtk.HButtonBox()
-        self.bbox.show()
-        vbox.pack_start(self.bbox, False, False, 0)
-        self.bbox.set_border_width(12)
-        self.bbox.set_layout(gtk.BUTTONBOX_END)
-        self.bbox.set_spacing(6)
-
-        button = gtk.Button(stock=gtk.STOCK_CANCEL)
-        button.show()
-        self.bbox.pack_start(button, False, False, 0)
-        button.connect('clicked', lambda w: self.quit())
-
-        self.prev_button = gtk.Button(stock=gtk.STOCK_GO_BACK)
-        self.prev_button.show()
-        self.bbox.pack_start(self.prev_button, False, False, 0)
-        self.prev_button.connect('clicked', self.previous_page)
-
-        self.next_button = gtk.Button("_Next")
-        self.next_button.show()
-        self.bbox.pack_start(self.next_button, False, False, 0)
-        self.next_button.connect('clicked', self.next_page)
-        self.next_button.set_image(
-            gtk.image_new_from_stock(gtk.STOCK_GO_FORWARD,
-                                     gtk.ICON_SIZE_BUTTON))
-        self.next_button.set_flags(gtk.CAN_DEFAULT)
-        self.next_button.grab_default()
-        self.next_button.grab_focus()
-
-        self.close_button = gtk.Button(stock=gtk.STOCK_CLOSE)
-        self.bbox.pack_start(self.close_button, False, False, 0)
-        self.close_button.connect('clicked', lambda w: self.quit())
-
-    def run(self):
-        if self.pages:
-            self.window.show()
-            self.page_stack.append(self.pages[0])
-            self.update_buttons()
-
-        gtk.main()
-
-    def quit(self):
-        gtk.main_quit()
-
-    def update_buttons(self):
-        cur_page = self.page_stack[-1]
-        cur_page_num = self.notebook.get_current_page()
-
-        self.prev_button.set_sensitive(cur_page_num > 0 and
-                                       cur_page['allow_back'])
-
-        if cur_page_num == len(self.pages) - 1:
-            self.close_button.show()
-            self.next_button.hide()
-        else:
-            allow_next = True
-
-            for validator in cur_page['validators']:
-                if not validator():
-                    allow_next = False
-                    break
-
-            self.close_button.hide()
-            self.next_button.show()
-            self.next_button.set_sensitive(allow_next)
-
-    def previous_page(self, widget):
-        self.page_stack.pop()
-        self.notebook.set_current_page(self.page_stack[-1]['index'])
-        self.update_buttons()
-
-    def next_page(self, widget):
-        new_page_index = self.notebook.get_current_page() + 1
-
-        for i in range(new_page_index, len(self.pages)):
-            page = self.pages[i]
-
-            if not page['is_visible_func'] or page['is_visible_func']():
-                page_info = self.pages[i]
-
-                self.notebook.set_current_page(i)
-                self.page_stack.append(page)
-                self.update_buttons()
-
-                for func in page_info['on_show_funcs']:
-                    func()
-
-                return
-
-    def page(self, text, allow_back=True, is_visible_func=None,
-             on_show_func=None):
-        vbox = gtk.VBox(False, 0)
-        vbox.show()
-        self.notebook.append_page(vbox)
-
-        hbox = gtk.HBox(False, 12)
-        hbox.show()
-        vbox.pack_start(hbox, False, True, 0)
-        hbox.set_border_width(12)
-
-        # Paint the title box as the base color (usually white)
-        hbox.connect(
-            'expose-event',
-            lambda w, e: w.get_window().draw_rectangle(
-                w.get_style().base_gc[w.state],
-                True,
-                *w.get_allocation()))
-
-        # Add the logo
-        logo_file = pkg_resources.resource_filename(
-            "reviewboard",
-            "htdocs/static/rb/images/logo.png")
-        image = gtk.image_new_from_file(logo_file)
-        image.show()
-        hbox.pack_start(image, False, False, 0)
-
-        # Add the page title
-        label = gtk.Label("<big><b>%s</b></big>" % text)
-        label.show()
-        hbox.pack_start(label, True, True, 0)
-        label.set_alignment(0, 0.5)
-        label.set_use_markup(True)
-
-        # Add the separator
-        sep = gtk.HSeparator()
-        sep.show()
-        vbox.pack_start(sep, False, True, 0)
-
-        content_vbox = gtk.VBox(False, 12)
-        content_vbox.show()
-        vbox.pack_start(content_vbox, True, True, 0)
-        content_vbox.set_border_width(12)
-
-        page = {
-            'is_visible_func': is_visible_func,
-            'widget': content_vbox,
-            'index': len(self.pages),
-            'allow_back': allow_back,
-            'label_sizegroup': gtk.SizeGroup(gtk.SIZE_GROUP_HORIZONTAL),
-            'validators': [],
-            'on_show_funcs': [],
-        }
-
-        if on_show_func:
-            page['on_show_funcs'].append(on_show_func)
-
-        self.pages.append(page)
-
-        return page
-
-    def prompt_input(self, page, prompt, default=None, password=False,
-                     normalize_func=None, save_obj=None, save_var=None):
-        def save_input(widget=None, event=None):
-            value = entry.get_text()
-
-            if normalize_func:
-                value = normalize_func(value)
-
-            setattr(save_obj, save_var, value)
-
-            self.update_buttons()
-
-        hbox = gtk.HBox(False, 6)
-        hbox.show()
-        page['widget'].pack_start(hbox, False, False, 0)
-
-        label = gtk.Label("<b>%s:</b>" % prompt)
-        label.show()
-        hbox.pack_start(label, False, True, 0)
-        label.set_alignment(0, 0.5)
-        label.set_line_wrap(True)
-        label.set_use_markup(True)
-
-        page['label_sizegroup'].add_widget(label)
-
-        entry = gtk.Entry()
-        entry.show()
-        hbox.pack_start(entry, True, True, 0)
-        entry.set_activates_default(True)
-
-        if password:
-            entry.set_visibility(False)
-            if not save_var.startswith('reenter'):
-                page['validators'].append(
-                    lambda: self.confirm_reentry(site, save_var))
-
-        if default:
-            entry.set_text(default)
-
-        entry.connect("key_release_event", save_input)
-
-        page.setdefault('entries', []).append(entry)
-        page['validators'].append(lambda: entry.get_text() != "")
-        page['on_show_funcs'].append(save_input)
-
-        # If this is the first on the page, make sure it gets focus when
-        # we switch to this page.
-        if len(page['entries']) == 1:
-            page['on_show_funcs'].append(entry.grab_focus)
-
-    def confirm_reentry(self, obj, var):
-        pw = getattr(obj, var)
-        repw = getattr(obj, 'reenter_' + var)
-        return pw == repw
-
-    def prompt_choice(self, page, prompt, choices,
-                      save_obj=None, save_var=None):
-        """
-        Prompts the user for an item amongst a list of choices.
-        """
-
-        def on_toggled(radio_button, data):
-            if radio_button.get_active():
-                setattr(save_obj, save_var, data)
-
-        hbox = gtk.HBox(False, 0)
-        hbox.show()
-        page['widget'].pack_start(hbox, False, True, 0)
-
-        label = gtk.Label("    ")
-        label.show()
-        hbox.pack_start(label, False, False, 0)
-
-        vbox = gtk.VBox(False, 6)
-        vbox.show()
-        hbox.pack_start(vbox, True, True, 0)
-
-        label = gtk.Label("<b>%s:</b>" % prompt)
-        label.show()
-        vbox.pack_start(label, False, True, 0)
-        label.set_alignment(0, 0)
-        label.set_line_wrap(True)
-        label.set_use_markup(True)
-
-        buttons = []
-        first_enabled = 0
-
-        for choice in choices:
-            description = ''
-            enabled = True
-
-            if isinstance(choice, basestring):
-                text = choice
-            elif len(choice) == 2:
-                text, enabled = choice
-            else:
-                text, description, enabled = choice
-
-            if not (enabled or first_enabled):
-                first_enabled += 1
-
-            radio_button = gtk.RadioButton(label='%s %s' % (text, description),
-                                           use_underline=False)
-            radio_button.show()
-            vbox.pack_start(radio_button, False, True, 0)
-            buttons.append(radio_button)
-            radio_button.set_sensitive(enabled)
-            radio_button.connect('toggled', on_toggled, text)
-
-        # Set the first enabled button chosen if there is any
-        if first_enabled >= len(buttons):
-            raise RuntimeWarning('There is no valid choice')
-
-        # Force 'toggled' signal to set default value
-        buttons[first_enabled].toggled()
-
-        for button in buttons:
-            if button != buttons[first_enabled]:
-                button.set_group(buttons[first_enabled])
-
-    def text(self, page, text):
-        """
-        Displays a block of text to the user.
-        """
-        label = gtk.Label(textwrap.fill(text, 80))
-        label.show()
-        page['widget'].pack_start(label, False, True, 0)
-        label.set_alignment(0, 0)
-
-    def disclaimer(self, page, text):
-        """Displays a block of disclaimer text to the user, with an icon."""
-        hbox = gtk.HBox(False, 6)
-        hbox.show()
-        page['widget'].pack_start(hbox, False, True, 0)
-
-        icon = gtk.image_new_from_icon_name(gtk.STOCK_DIALOG_WARNING,
-                                            gtk.ICON_SIZE_MENU)
-        icon.show()
-        hbox.pack_start(icon, False, False, 0)
-        icon.set_alignment(0, 0)
-
-        label = gtk.Label(textwrap.fill(text, 80))
-        label.show()
-        hbox.pack_start(label, True, True, 0)
-        label.set_alignment(0, 0)
-
-    def urllink(self, page, url):
-        """
-        Displays a URL to the user.
-        """
-        link_button = gtk.LinkButton(url, url)
-        link_button.show()
-        page['widget'].pack_start(link_button, False, False, 0)
-        link_button.set_alignment(0, 0)
-
-    def itemized_list(self, page, title, items):
-        """
-        Displays an itemized list.
-        """
-        if title:
-            label = gtk.Label()
-            label.set_markup("<b>%s:</b>" % title)
-            label.show()
-            page['widget'].pack_start(label, False, True, 0)
-            label.set_alignment(0, 0)
-
-        for item in items:
-            self.text(page, u"    \u2022 %s" % item)
-
-    def step(self, page, text, func):
-        """
-        Adds a step of a multi-step operation. This will indicate when
-        it's starting and when it's complete.
-        """
-        def call_func():
-            self.bbox.set_sensitive(False)
-            label.set_markup("<b>%s</b>" % text)
-
-            while gtk.events_pending():
-                gtk.main_iteration()
-
-            func()
-
-            label.set_text(text)
-            self.bbox.set_sensitive(True)
-            icon.set_from_stock(gtk.STOCK_APPLY, gtk.ICON_SIZE_MENU)
-
-        hbox = gtk.HBox(False, 12)
-        hbox.show()
-        page['widget'].pack_start(hbox, False, False, 0)
-
-        icon = gtk.Image()
-        icon.show()
-        hbox.pack_start(icon, False, False, 0)
-
-        icon.set_size_request(*gtk.icon_size_lookup(gtk.ICON_SIZE_MENU))
-
-        label = gtk.Label(text)
-        label.show()
-        hbox.pack_start(label, False, False, 0)
-        label.set_alignment(0, 0)
-
-        page['on_show_funcs'].append(call_func)
-
-    def error(self, text, done_func=None):
-        """
-        Displays a block of error text to the user.
-        """
-        dlg = gtk.MessageDialog(self.window,
-                                gtk.DIALOG_MODAL |
-                                gtk.DIALOG_DESTROY_WITH_PARENT,
-                                gtk.MESSAGE_ERROR,
-                                gtk.BUTTONS_OK,
-                                text)
-        dlg.show()
-
-        if not done_func:
-            done_func = self.quit
-
-        dlg.connect('response', lambda w, e: done_func())
 
 
 class Command(object):
@@ -1390,6 +1109,10 @@ class InstallCommand(Command):
 
         group = OptionGroup(parser, "'install' command",
                             self.__doc__.strip())
+        group.add_option('--advanced', action='store_true',
+                         dest='advanced',
+                         default=False,
+                         help='provide more advanced configuration options')
         group.add_option("--copy-media", action="store_true",
                          dest="copy_media",
                          default=is_windows,
@@ -1398,6 +1121,15 @@ class InstallCommand(Command):
         group.add_option("--noinput", action="store_true", default=False,
                          help="run non-interactively using configuration "
                               "provided in command-line options")
+        group.add_option('--opt-out-support-data',
+                         action='store_false',
+                         default=True,
+                         dest='send_support_usage_stats',
+                         help='opt out of sending data and stats for '
+                              'improved user and admin support')
+        group.add_option("--company",
+                         help="the name of the company or organization that "
+                              "owns the server")
         group.add_option("--domain-name",
                          help="fully-qualified host name of the site, "
                          "excluding the http://, port or path")
@@ -1420,18 +1152,21 @@ class InstallCommand(Command):
                          help="password for the database user "
                               "(not for sqlite3)")
         group.add_option("--cache-type",
+                         default='memcached',
                          help="cache server type (memcached or file)")
         group.add_option("--cache-info",
+                         default='localhost:11211',
                          help="cache identifier (memcached connection string "
                               "or file cache directory)")
         group.add_option("--web-server-type",
+                         default='apache',
                          help="web server (apache or lighttpd)")
         group.add_option("--web-server-port",
                          help="port that the web server should listen on",
                          default='80')
         group.add_option("--python-loader",
-                         help="python loader for apache (modpython, fastcgi "
-                              "or wsgi)")
+                        default='wsgi',
+                         help="python loader for apache (fastcgi or wsgi)")
         group.add_option("--admin-user", default="admin",
                          help="the site administrator's username")
         group.add_option("--admin-password",
@@ -1464,21 +1199,33 @@ class InstallCommand(Command):
         if not options.noinput:
             self.ask_domain()
             self.ask_site_root()
-            self.ask_shipped_media_url()
-            self.ask_uploaded_media_url()
+
+            if options.advanced:
+                self.ask_shipped_media_url()
+                self.ask_uploaded_media_url()
+
             self.ask_database_type()
             self.ask_database_name()
             self.ask_database_host()
             self.ask_database_login()
-            self.ask_cache_type()
+
+            if options.advanced:
+                self.ask_cache_type()
+
             self.ask_cache_info()
-            self.ask_web_server_type()
-            self.ask_python_loader()
+
+            if options.advanced:
+                self.ask_web_server_type()
+                self.ask_python_loader()
+
             self.ask_admin_user()
+            self.ask_support_data()
+
             # Do not ask for sitelist file, it should not be common.
 
         self.show_install_status()
         self.show_finished()
+        self.show_get_more()
 
     def normalize_root_url_path(self, path):
         if not path.endswith("/"):
@@ -1674,7 +1421,7 @@ class InstallCommand(Command):
                         save_obj=site, save_var="db_user")
         ui.prompt_input(page, "Database Password", site.db_pass, password=True,
                         save_obj=site, save_var="db_pass")
-        ui.prompt_input(page, "Confirm Database Password", site.db_pass,
+        ui.prompt_input(page, "Confirm Database Password",
                         password=True, save_obj=site,
                         save_var="reenter_db_pass")
 
@@ -1698,7 +1445,7 @@ class InstallCommand(Command):
         ui.text(page, "This is in the format of hostname:port")
 
         ui.prompt_input(page, "Memcache Server",
-                        site.cache_info or "localhost:11211",
+                        site.cache_info,
                         save_obj=site, save_var="cache_info")
 
         # Appears only if using file caching.
@@ -1727,7 +1474,6 @@ class InstallCommand(Command):
                          [
                              ("wsgi", "(recommended)", True),
                              "fastcgi",
-                             ("modpython", "(no longer supported)", True),
                          ],
                          save_obj=site, save_var="python_loader")
 
@@ -1748,11 +1494,40 @@ class InstallCommand(Command):
                         save_obj=site, save_var="admin_user")
         ui.prompt_input(page, "Password", site.admin_password, password=True,
                         save_obj=site, save_var="admin_password")
-        ui.prompt_input(page, "Confirm Password", site.admin_password,
+        ui.prompt_input(page, "Confirm Password",
                         password=True, save_obj=site,
                         save_var="reenter_admin_password")
         ui.prompt_input(page, "E-Mail Address", site.admin_email,
                         save_obj=site, save_var="admin_email")
+        ui.prompt_input(page, "Company/Organization Name", site.company,
+                        save_obj=site, save_var="company", optional=True)
+
+    def ask_support_data(self):
+        page = ui.page('Enable collection of data for better support')
+
+        ui.text(page, 'We would like to periodically collect data and '
+                      'statistics about your installation to provide a '
+                      'better support experience for you and your users.')
+
+        ui.text(page, 'The data collected includes basic information such as '
+                      'your company name, the version of Review Board, and '
+                      'the size of your install. It does NOT include '
+                      'confidential data such as source code. Data collected '
+                      'never leaves our server and is never given to any '
+                      'third parties for any purposes.')
+
+        ui.text(page, 'We use this to provide a user support page that\'s '
+                      'more specific to your server. We also use it to '
+                      'determine which versions to continue to support, and '
+                      'to help track how upgrades affect our number of bug '
+                      'reports and support incidents.')
+
+        ui.text(page, 'You can choose to turn this off at any time in '
+                      'Support Settings in Review Board.')
+
+        ui.prompt_input(page, 'Allow us to collect support data?',
+                        site.send_support_usage_stats, yes_no=True,
+                        save_obj=site, save_var='send_support_usage_stats')
 
     def show_install_status(self):
         page = ui.page("Installing the site...", allow_back=False)
@@ -1768,6 +1543,8 @@ class InstallCommand(Command):
                 site.create_admin_user)
         ui.step(page, "Saving site settings",
                 self.save_settings)
+        ui.step(page, "Setting up support",
+                self.setup_support)
 
     def show_finished(self):
         page = ui.page("The site has been installed", allow_back=False)
@@ -1782,11 +1559,28 @@ class InstallCommand(Command):
         ui.itemized_list(page, None, [
             os.path.join(site.abs_install_dir, 'htdocs', 'media', 'uploaded'),
             os.path.join(site.abs_install_dir, 'htdocs', 'media', 'ext'),
+            os.path.join(site.abs_install_dir, 'htdocs', 'static', 'ext'),
             os.path.join(site.abs_install_dir, 'data'),
         ])
 
         ui.text(page, "For more information, visit:")
-        ui.urllink(page, "%sadmin/installation/creating-sites/" % DOCS_BASE)
+        ui.urllink(page,
+                   "%sadmin/installation/creating-sites/" % get_manual_url())
+
+    def show_get_more(self):
+        from reviewboard.admin.support import get_install_key
+
+        page = ui.page('Get more out of Review Board', allow_back=False)
+        ui.text(page, 'To enable PDF document review, enhanced scalability, '
+                      'GitHub Enterprise support, and more, download '
+                      'Power Pack at:')
+        ui.urllink(page, 'https://www.reviewboard.org/powerpack/')
+
+        ui.text(page, 'Your install key for Power Pack is: %s'
+                      % get_install_key())
+
+        ui.text(page, 'Support contracts for Review Board are also available:')
+        ui.urllink(page, 'https://www.beanbaginc.com/support/contracts/')
 
     def save_settings(self):
         """
@@ -1814,6 +1608,9 @@ class InstallCommand(Command):
         site_static_root = os.path.join(htdocs_path, "static")
 
         siteconfig = SiteConfiguration.objects.get_current()
+        siteconfig.set("company", site.company)
+        siteconfig.set("send_support_usage_stats",
+                       site.send_support_usage_stats)
         siteconfig.set("site_static_url", site_static_url)
         siteconfig.set("site_static_root", site_static_root)
         siteconfig.set("site_media_url", site_media_url)
@@ -1826,10 +1623,15 @@ class InstallCommand(Command):
             abs_sitelist = os.path.abspath(site.sitelist)
 
             # Add the site to the sitelist file.
-            print "Saving site %s to the sitelist %s\n" % (
-                  site.install_dir, abs_sitelist)
+            print("Saving site %s to the sitelist %s\n" % (
+                  site.install_dir, abs_sitelist))
             sitelist = SiteList(abs_sitelist)
             sitelist.add_site(site.install_dir)
+
+    def setup_support(self):
+        """Sets up the support page for the installation."""
+        if site.send_support_usage_stats:
+            site.register_support_page()
 
 
 class UpgradeCommand(Command):
@@ -1851,57 +1653,58 @@ class UpgradeCommand(Command):
     def run(self):
         site.setup_settings()
 
+        diff_dedup_needed = site.get_diff_dedup_needed()
         static_media_upgrade_needed = site.get_static_media_upgrade_needed()
         data_dir_exists = os.path.exists(
             os.path.join(site.install_dir, "data"))
 
-        print "Rebuilding directory structure"
+        print("Rebuilding directory structure")
         site.rebuild_site_directory()
+        site.generate_cron_files()
 
         if site.get_settings_upgrade_needed():
-            print "Upgrading site settings_local.py"
+            print("Upgrading site settings_local.py")
             site.upgrade_settings()
 
         if options.upgrade_db:
-            print "Updating database. This may take a while."
-            print
-            print "The log output below, including warnings and errors,"
-            print "can be ignored unless upgrade fails."
-            print
-            print "------------------ <begin log output> ------------------"
+            print("Updating database. This may take a while.\n"
+                  "\n"
+                  "The log output below, including warnings and errors,\n"
+                  "can be ignored unless upgrade fails.\n"
+                  "\n"
+                  "------------------ <begin log output> ------------------")
             site.sync_database()
             site.migrate_database()
-            print "------------------- <end log output> -------------------"
-            print
-
-            print "Resetting in-database caches."
+            print("------------------- <end log output> -------------------\n"
+                  "\n"
+                  "Resetting in-database caches.")
             site.run_manage_command("fixreviewcounts")
 
-        print
-        print "Upgrade complete!"
+        from djblets.siteconfig.models import SiteConfiguration
+
+        siteconfig = SiteConfiguration.objects.get_current()
+
+        if siteconfig.get('send_support_usage_stats'):
+            site.register_support_page()
+
+        print()
+        print("Upgrade complete!")
 
         if not data_dir_exists:
             # This is an upgrade of a site that pre-dates the new $HOME
             # directory ($sitedir/data). Tell the user how to upgrade things.
-            print
-            print "A new 'data' directory has been created inside of your site"
-            print "directory. This will act as the home directory for programs"
-            print "invoked by Review Board."
-            print
-            print "You need to change the ownership of this directory so that"
-            print "the web server can write to it."
-            print
-            print "If using mod_python, you will also need to add the following"
-            print "to your Review Board Apache configuration:"
-            print
-            print "    SetEnv HOME %s" % os.path.join(site.abs_install_dir,
-                                                      "data")
+            print()
+            print("A new 'data' directory has been created inside of your "
+                  "site")
+            print("directory. This will act as the home directory for "
+                  "programs")
+            print("invoked by Review Board.")
+            print()
+            print("You need to change the ownership of this directory so that")
+            print("the web server can write to it.")
 
         if static_media_upgrade_needed:
-            from djblets.siteconfig.models import SiteConfiguration
             from django.conf import settings
-
-            siteconfig = SiteConfiguration.objects.get_current()
 
             if 'manual-updates' not in siteconfig.settings:
                 siteconfig.settings['manual-updates'] = {}
@@ -1912,48 +1715,78 @@ class UpgradeCommand(Command):
             static_dir = "%s/htdocs/static" % \
                          site.abs_install_dir.replace('\\', '/')
 
-            print
-            print "The location of static media files (CSS, JavaScript, images)"
-            print "has changed. You will need to make manual changes to "
-            print "your web server configuration."
-            print
-            print "For Apache, you will need to add:"
-            print
-            print "    <Location \"%sstatic\">" % settings.SITE_ROOT
-            print "        SetHandler None"
-            print "    </Location>"
-            print
-            print "    Alias %sstatic \"%s\"" % (settings.SITE_ROOT,
-                                                 static_dir)
-            print
-            print "For lighttpd:"
-            print
-            print "    alias.url = ("
-            print "        ..."
-            print "        \"%sstatic\" => \"%s\"," % (settings.SITE_ROOT,
-                                                       static_dir)
-            print "        ..."
-            print "    )"
-            print
-            print "    url.rewrite-once = ("
-            print "        ..."
-            print "        \"^(%sstatic/.*)$\" => \"$1\"," % settings.SITE_ROOT
-            print "        ..."
-            print "    )"
-            print
-            print "Once you have made these changes, type the following "
-            print "to resolve this:"
-            print
-            print "    $ rb-site manage %s resolve-check static-media" % \
-                  site.abs_install_dir
+            print()
+            print("The location of static media files (CSS, JavaScript, "
+                  "images)")
+            print("has changed. You will need to make manual changes to ")
+            print("your web server configuration.")
+            print()
+            print("For Apache, you will need to add:")
+            print()
+            print("    <Location \"%sstatic\">" % settings.SITE_ROOT)
+            print("        SetHandler None")
+            print("    </Location>")
+            print()
+            print("    Alias %sstatic \"%s\"" % (settings.SITE_ROOT,
+                                                 static_dir))
+            print()
+            print("For lighttpd:")
+            print()
+            print("    alias.url = (")
+            print("        ...")
+            print("        \"%sstatic\" => \"%s\"," % (settings.SITE_ROOT,
+                                                       static_dir))
+            print("        ...")
+            print("    )")
+            print()
+            print("    url.rewrite-once = (")
+            print("        ...")
+            print("        \"^(%sstatic/.*)$\" => \"$1\"," %
+                  settings.SITE_ROOT)
+            print("        ...")
+            print("    )")
+            print()
+            print("Once you have made these changes, type the following ")
+            print("to resolve this:")
+            print()
+            print("    $ rb-site manage %s resolve-check static-media" %
+                  site.abs_install_dir)
+
+        if diff_dedup_needed:
+            print()
+            print('There are duplicate copies of diffs in your database that '
+                  'can be condensed.')
+            print('These are the result of posting several iterations of a '
+                  'change for review on')
+            print('older versions of Review Board.')
+            print()
+            print('Removing duplicate diff data will save space in your '
+                  'database and speed up')
+            print('future upgrades.')
+            print()
+            print('To condense duplicate diffs, type the following:')
+            print()
+            print('    $ rb-site manage %s condensediffs'
+                  % site.abs_install_dir)
 
 
 class ManageCommand(Command):
-    """
-    Runs a manage.py command on the site.
-    """
+    """Runs a Django management command on the site."""
+    help_text = (
+        'Runs a Django management command on the site. '
+        'Usage: `rb-site manage <path> <command> -- <arguments>.` '
+        'Run `manage -- --help` for the list of commands.'
+    )
+
+    def add_options(self, parser):
+        group = OptionGroup(parser, "'manage' command", self.help_text)
+        parser.add_option_group(group)
+
     def run(self):
         site.setup_settings()
+
+        from reviewboard import initialize
+        initialize()
 
         if len(args) == 0:
             ui.error("A manage command is needed.",
@@ -1977,9 +1810,6 @@ def parse_options(args):
     parser = OptionParser(usage="%prog command [options] path",
                           version="%prog " + VERSION)
 
-    parser.add_option("--console",
-                      action="store_true", dest="force_console", default=False,
-                      help="force the console UI")
     parser.add_option("-d", "--debug",
                       action="store_true", dest="debug", default=DEBUG,
                       help="display debug output")
@@ -1992,9 +1822,6 @@ def parse_options(args):
         command.add_options(parser)
 
     (options, args) = parser.parse_args(args)
-
-    if options.noinput:
-        options.force_console = True
 
     if len(args) < 1:
         parser.print_help()
@@ -2009,8 +1836,8 @@ def parse_options(args):
         site_paths = sitelist.sites
 
         if len(site_paths) == 0:
-            print "No Review Board sites listed in %s" % sitelist.path
-            sys.exit(1)
+            print("No Review Board sites listed in %s" % sitelist.path)
+            sys.exit(0)
     elif len(args) >= 2 and command in COMMANDS:
         site_paths = [args[1]]
     else:
@@ -2029,11 +1856,7 @@ def main():
     command_name, site_paths = parse_options(sys.argv[1:])
     command = COMMANDS[command_name]
 
-    if command.needs_ui and can_use_gtk and not options.force_console:
-        ui = GtkUI()
-
-    if not ui:
-        ui = ConsoleUI()
+    ui = ConsoleUI()
 
     for install_dir in site_paths:
         site = Site(install_dir, options)

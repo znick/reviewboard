@@ -1,3 +1,5 @@
+from __future__ import unicode_literals
+
 import logging
 import os
 
@@ -5,9 +7,12 @@ from django.contrib.staticfiles.templatetags.staticfiles import static
 from django.utils.html import escape
 from django.utils.encoding import smart_str, force_unicode
 from django.utils.safestring import mark_safe
-from djblets.util.misc import cache_memoize
+from djblets.cache.backend import cache_memoize
 from djblets.util.templatetags.djblets_images import thumbnail
 from pipeline.storage import default_storage
+from pygments import highlight
+from pygments.lexers import (ClassNotFound, guess_lexer_for_filename,
+                             TextLexer)
 import docutils.core
 import markdown
 import mimeparse
@@ -150,7 +155,7 @@ class MimetypeHandler(object):
         if handler:
             try:
                 return handler(attachment, mimetype)
-            except Exception, e:
+            except Exception as e:
                 logging.error('Unable to load Mimetype Handler for %s: %s',
                               attachment, e, exc_info=1)
 
@@ -202,7 +207,7 @@ class ImageMimetype(MimetypeHandler):
                          'class="file-thumbnail" alt="%s" />'
                          % (thumbnail(self.attachment.file),
                             thumbnail(self.attachment.file, '800x200'),
-                            self.attachment.caption))
+                            escape(self.attachment.caption)))
 
 
 class TextMimetype(MimetypeHandler):
@@ -213,19 +218,33 @@ class TextMimetype(MimetypeHandler):
     # the file attachment to prevent long reads caused by malicious
     # or auto-generated files.
     FILE_CROP_CHAR_LIMIT = 2000
-    TEXT_CROP_NUM_HEIGHT = 4
-    TEXT_CROP_NUM_LENGTH = 50
+    TEXT_CROP_NUM_HEIGHT = 8
 
-    def _generate_preview_html(self, data_string):
+    def _generate_preview_html(self, data):
         """Returns the first few truncated lines of the text file."""
+        from reviewboard.diffviewer.chunk_generator import \
+            NoWrapperHtmlFormatter
 
-        preview_lines = data_string.splitlines()[:self.TEXT_CROP_NUM_HEIGHT]
+        charset = self.mimetype[2].get('charset', 'ascii')
+        try:
+            text = data.decode(charset)
+        except UnicodeDecodeError:
+            logging.error('Could not decode text file attachment %s using '
+                          'charset "%s"',
+                          self.attachment.pk, charset)
+            text = data.decode('utf-8', 'replace')
 
-        for i in range(min(self.TEXT_CROP_NUM_HEIGHT, len(preview_lines))):
-            preview_lines[i] = \
-                escape(preview_lines[i][:self.TEXT_CROP_NUM_LENGTH])
+        try:
+            lexer = guess_lexer_for_filename(self.attachment.filename, text)
+        except ClassNotFound:
+            lexer = TextLexer()
 
-        return '<br />'.join(preview_lines)
+        lines = highlight(text, lexer, NoWrapperHtmlFormatter()).splitlines()
+
+        return ''.join([
+            '<pre>%s</pre>' % line
+            for line in lines[:self.TEXT_CROP_NUM_HEIGHT]
+        ])
 
     def _generate_thumbnail(self):
         """Returns the HTML for a thumbnail preview for a text file."""
@@ -233,15 +252,15 @@ class TextMimetype(MimetypeHandler):
         f.open()
 
         try:
-            data_string = f.read(self.FILE_CROP_CHAR_LIMIT)
-        except (ValueError, IOError), e:
+            data = f.read(self.FILE_CROP_CHAR_LIMIT)
+        except (ValueError, IOError) as e:
             logging.error('Failed to read from file attachment %s: %s'
                           % (self.attachment.pk, e))
             raise
 
         f.close()
         return mark_safe('<div class="file-thumbnail-clipped">%s</div>'
-                         % self._generate_preview_html(data_string))
+                         % self._generate_preview_html(data))
 
     def get_thumbnail(self):
         """Returns the thumbnail of the text file as rendered as html"""
@@ -400,6 +419,6 @@ MIMETYPE_ICON_ALIASES = {
 # such as 'text/x-rst' or 'text/x-markdown', so we just go by the
 # extension name.
 MIMETYPE_EXTENSIONS = {
-    '.rst': (u'text', u'x-rst', {}),
-    '.md': (u'text', u'x-markdown', {}),
+    '.rst': ('text', 'x-rst', {}),
+    '.md': ('text', 'x-markdown', {}),
 }

@@ -97,10 +97,10 @@ RB.IssueSummaryTableView = Backbone.View.extend({
 
     _onHeaderClicked: function(event) {
         if (this._$tbody.find('tr.issue:visible').length !== 0) {
-            var $header = $(event.srcElement);
+            var $header = $(event.target);
 
             this._sortByCol(
-                $header.parent().children().index(event.srcElement) + 1);
+                $header.parent().children().index(event.target) + 1);
         }
 
         return false;
@@ -110,13 +110,16 @@ RB.IssueSummaryTableView = Backbone.View.extend({
         event.stopPropagation();
 
         /*
-        * Extract the issue-id attribute and attach '#comment-' and
-        * '-issue' to find the comment's location. Then find the
-        * closest box class and uncollapse it.
-        */
-        var issueId = '#comment-' + $(event.srcElement).attr("comment-type") +
-                      '-' + $(event.srcElement).attr("issue-id") + '-issue';
-        $(issueId).closest(".box").removeClass("collapsed");
+         *  Extract the comment's attirbutes from the issue element and trigger
+         *  the issueClicked event so the page can navigate the user to the
+         *  relevant issue comment.
+         */
+        var $el = $(event.target);
+
+        this.trigger('issueClicked', {
+            type: $el.attr('comment-type'),
+            id: $el.attr('issue-id')
+        });
     },
 
     // Check that there are no issues that match the selected filter(s).

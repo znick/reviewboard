@@ -1,3 +1,5 @@
+from __future__ import unicode_literals
+
 import re
 
 from reviewboard.scmtools.perforce import PerforceTool
@@ -37,9 +39,9 @@ class VMwarePerforceTool(PerforceTool):
 
         lines = changeset.description.split('\n')
 
-        # First we go through and find the line numbers that start each section.
-        # We then sort these line numbers so we can slice out each individual
-        # section of text.
+        # First we go through and find the line numbers that start each
+        # section. We then sort these line numbers so we can slice out
+        # each individual section of text.
         locations = {}
         for i, line in enumerate(lines):
             for section in sections:
@@ -59,8 +61,8 @@ class VMwarePerforceTool(PerforceTool):
         branch = ', '.join(branches)
 
         try:
-            # The interesting part of the description field contains everything up
-            # to the first marked section.
+            # The interesting part of the description field contains everything
+            # up to the first marked section.
             changeset.description = '\n'.join(lines[:section_indices[0]])
         except IndexError:
             # If none of the sections exist, just return the changeset as-is
@@ -71,12 +73,13 @@ class VMwarePerforceTool(PerforceTool):
         # here, since it can appear multiple times.
         sections = {}
         branches = [branch]
-        for start, end in map(None, section_indices, section_indices[1:]):
+        for start, end in zip(section_indices, section_indices[:1]):
             name = locations[start]
             if name == 'Merge to:':
                 # Include merge information in the branch field
-                m = re.match('Merge to: (?P<branch>[\w\-]+): (?P<type>[A-Z]+)',
-                             lines[start])
+                m = re.match(
+                    r'Merge to: (?P<branch>[\w\-]+): (?P<type>[A-Z]+)',
+                    lines[start])
                 if m:
                     if m.group('type') == 'YES':
                         branches.append(m.group('branch'))
@@ -84,9 +87,10 @@ class VMwarePerforceTool(PerforceTool):
                         branches.append(m.group('branch') + ' (manual)')
 
             else:
-                sections[name] = '\n'.join(lines[start:end])[len(name):].strip()
+                sections[name] = \
+                    '\n'.join(lines[start:end])[len(name):].strip()
 
-        changeset.branch = ' &rarr; '.join(branches)
+        changeset.branch = ' \u2192 '.join(branches)
 
         changeset.testing_done = sections.get('Testing Done:')
 

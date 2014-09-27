@@ -1,27 +1,32 @@
 #!/usr/bin/env python
 
+from __future__ import print_function, unicode_literals
+
 import getopt
 import os
 import sys
 
 
+DEFAULT_HOST = "0.0.0.0"
 DEFAULT_PORT = "8080"
 
 
 def usage():
-    print "usage:  %s options" % sys.argv[0]
-    print
-    print "OPTIONS:"
-    print "   -h           Show this message"
-    print "   -p PORT      Set server port (defaults to %s)" % DEFAULT_PORT
+    print("usage:  %s options" % sys.argv[0])
+    print()
+    print("OPTIONS:")
+    print("   -h           Show this message")
+    print("   -H HOST      Set server host (defaults to %s)" % DEFAULT_HOST)
+    print("   -p PORT      Set server port (defaults to %s)" % DEFAULT_PORT)
 
 
 def main():
     # Assign default settings
+    server_host = DEFAULT_HOST
     server_port = DEFAULT_PORT
 
     # Do any command-line argument processing
-    (opts, args) = getopt.getopt(sys.argv[1:], 'hp:')
+    (opts, args) = getopt.getopt(sys.argv[1:], 'hH:p:')
 
     for opt, arg in opts:
         if opt == '-h':
@@ -29,6 +34,8 @@ def main():
             sys.exit(1)
         elif opt == '-p':
             server_port = arg
+        elif opt == '-H':
+            server_host = arg
         else:
             usage()
             sys.exit(1)
@@ -53,9 +60,8 @@ def main():
         os.system("python ./setup.py egg_info")
 
     # And now just boot up the server
-    os.system(sys.executable +
-              ' ./reviewboard/manage.py runserver 0.0.0.0:%s --nostatic'
-              % server_port)
+    os.system('%s ./reviewboard/manage.py runserver %s:%s --nostatic'
+              % (sys.executable, server_host, server_port))
 
 if __name__ == "__main__":
     main()

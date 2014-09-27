@@ -1,4 +1,4 @@
-describe('resources/models/DiffComment', function() {
+suite('rb/resources/models/DiffComment', function() {
     var model;
 
     beforeEach(function() {
@@ -6,7 +6,7 @@ describe('resources/models/DiffComment', function() {
         model = new RB.DiffComment({
             fileDiffID: 16,
             parentObject: new RB.BaseResource({
-                public: true
+                'public': true
             })
         });
     });
@@ -28,6 +28,7 @@ describe('resources/models/DiffComment', function() {
                     id: 42,
                     issue_opened: true,
                     issue_status: 'resolved',
+                    text_type: 'markdown',
                     text: 'foo',
                     first_line: 10,
                     num_lines: 5,
@@ -46,6 +47,7 @@ describe('resources/models/DiffComment', function() {
             expect(data.id).toBe(42);
             expect(data.issueOpened).toBe(true);
             expect(data.issueStatus).toBe(RB.BaseComment.STATE_RESOLVED);
+            expect(data.richText).toBe(true);
             expect(data.text).toBe('foo');
             expect(data.beginLineNum).toBe(10);
             expect(data.endLineNum).toBe(14);

@@ -1,8 +1,12 @@
+from __future__ import unicode_literals
+
+import logging
 import os
 import re
 import tempfile
-import urlparse
 
+from django.utils import six
+from django.utils.six.moves.urllib.parse import urlparse
 from djblets.util.filesystem import is_exe_in_path
 
 from reviewboard.scmtools.core import SCMTool, HEAD, PRE_CREATION
@@ -29,16 +33,21 @@ class CVSTool(SCMTool):
     }
 
     rev_re = re.compile(r'^.*?(\d+(\.\d+)+)\r?$')
-    repopath_re = re.compile(r'^(?P<hostname>.*):(?P<port>\d+)?(?P<path>.*)')
+    repopath_re = re.compile(
+        r'^((?P<cnxmethod>:[gkp]server:)'
+        r'((?P<username>[^:@]+)(:(?P<password>[^@]+))?@)?)?'
+        r'(?P<hostname>[^:]+):(?P<port>\d+)?(?P<path>.*)')
     ext_cvsroot_re = re.compile(r':ext:([^@]+@)?(?P<hostname>[^:/]+)')
 
     def __init__(self, repository):
         super(CVSTool, self).__init__(repository)
 
+        credentials = repository.get_credentials()
+
         self.cvsroot, self.repopath = \
             self.build_cvsroot(self.repository.path,
-                               self.repository.username,
-                               self.repository.password)
+                               credentials['username'],
+                               credentials['password'])
 
         local_site_name = None
 
@@ -88,31 +97,36 @@ class CVSTool(SCMTool):
         #  :local:e:\path
         #  :fork:/path
 
-        if not path.startswith(":"):
-            # The user has a path or something. We'll want to parse out the
-            # server name, port (if specified) and path and build a :pserver:
-            # CVSROOT.
-            m = cls.repopath_re.match(path)
+        m = cls.repopath_re.match(path)
 
-            if m:
-                path = m.group("path")
-                cvsroot = ":pserver:"
+        if m:
+            # The user either specified a valid :pserver: path (or equivalent),
+            # or a simply hostname:port/path. In either case, we'll want to
+            # construct our own CVSROOT based on that information and the
+            # provided username and password.
+            #
+            # Note that any username/password found in the path takes
+            # precedence.
+            cvsroot = m.group('cnxmethod') or ':pserver:'
+            username = m.group('username') or username
+            password = m.group('password') or password
+            path = m.group('path')
 
-                if username:
-                    if password:
-                        cvsroot += '%s:%s@' % (username,
-                                               password)
-                    else:
-                        cvsroot += '%s@' % (username)
+            if username:
+                if password:
+                    cvsroot += '%s:%s@' % (username, password)
+                else:
+                    cvsroot += '%s@' % (username)
 
-                cvsroot += "%s:%s%s" % (m.group("hostname"),
-                                        m.group("port") or "",
-                                        path)
-                return cvsroot, path
+            cvsroot += '%s:%s%s' % (m.group('hostname'),
+                                    m.group('port') or '',
+                                    path)
+        else:
+            # We couldn't parse this as a standard CVSROOT. Assume it's a
+            # local path or another format (like :ext:) and let CVS handle it.
+            cvsroot = path
 
-        # We couldn't parse this as a hostname:port/path. Assume it's a local
-        # path or a full CVSROOT and let CVS handle it.
-        return path, path
+        return cvsroot, path
 
     @classmethod
     def check_repository(cls, path, username=None, password=None,
@@ -136,10 +150,10 @@ class CVSTool(SCMTool):
             try:
                 sshutils.check_host(m.group('hostname'), username, password,
                                     local_site_name)
-            except SSHAuthenticationError, e:
+            except SSHAuthenticationError as e:
                 # Represent an SSHAuthenticationError as a standard
                 # AuthenticationError.
-                raise AuthenticationError(e.allowed_types, unicode(e),
+                raise AuthenticationError(e.allowed_types, six.text_type(e),
                                           e.user_key)
             except:
                 # Re-raise anything else
@@ -149,14 +163,16 @@ class CVSTool(SCMTool):
         client = CVSClient(cvsroot, repopath, local_site_name)
 
         try:
-            client.cat_file('CVSROOT/modules', HEAD)
-        except (SCMError, SSHError, FileNotFoundError):
+            client.check_repository()
+        except (AuthenticationError, SCMError):
+            raise
+        except (SSHError, FileNotFoundError):
             raise RepositoryNotFoundError()
 
     @classmethod
     def parse_hostname(cls, path):
         """Parses a hostname from a repository path."""
-        return urlparse.urlparse(path)[1]  # netloc
+        return urlparse(path)[1]  # netloc
 
 
 class CVSDiffParser(DiffParser):
@@ -169,7 +185,8 @@ class CVSDiffParser(DiffParser):
         self.regex_full = re.compile('^RCS file: %s/(.*),v$' % re.escape(repo))
 
     def parse_special_header(self, linenum, info):
-        linenum = super(CVSDiffParser, self).parse_special_header(linenum, info)
+        linenum = super(CVSDiffParser, self).parse_special_header(
+            linenum, info)
 
         if 'index' not in info:
             # We didn't find an index, so the rest is probably bogus too.
@@ -185,10 +202,10 @@ class CVSDiffParser(DiffParser):
         else:
             raise DiffParserError('Unable to find RCS line', linenum)
 
-        while self.lines[linenum].startswith('retrieving '):
+        while self.lines[linenum].startswith(b'retrieving '):
             linenum += 1
 
-        if self.lines[linenum].startswith('diff '):
+        if self.lines[linenum].startswith(b'diff '):
             linenum += 1
 
         return linenum
@@ -196,16 +213,24 @@ class CVSDiffParser(DiffParser):
     def parse_diff_header(self, linenum, info):
         linenum = super(CVSDiffParser, self).parse_diff_header(linenum, info)
 
-        if info.get('origFile') == '/dev/null':
+        if info.get('origFile') in (b'/dev/null', b'nul:'):
             info['origFile'] = info['newFile']
             info['origInfo'] = 'PRE-CREATION'
         elif 'filename' in info:
             info['origFile'] = info['filename']
 
-        if info.get('newFile') == '/dev/null':
+        if info.get('newFile') == b'/dev/null':
             info['deleted'] = True
 
         return linenum
+
+    def normalize_diff_filename(self, filename):
+        """Normalize filenames in diffs.
+
+        The default behavior of stripping off leading slashes doesn't work for
+        CVS, so this overrides it to just return the filename un-molested.
+        """
+        return filename
 
 
 class CVSClient(object):
@@ -281,10 +306,10 @@ class CVSClient(object):
         os.chdir(self.tempdir)
 
         p = SCMTool.popen(['cvs', '-f', '-d', self.cvsroot, 'checkout',
-                           '-r', str(revision), '-p', filename],
+                           '-r', six.text_type(revision), '-p', filename],
                           self.local_site_name)
         contents = p.stdout.read()
-        errmsg = p.stderr.read()
+        errmsg = six.text_type(p.stderr.read())
         failure = p.wait()
 
         # Unfortunately, CVS is not consistent about exiting non-zero on
@@ -304,9 +329,9 @@ class CVSClient(object):
 
         # So, if nothing is in errmsg, or errmsg has a specific recognized
         # message, call it FileNotFound.
-        if not errmsg or \
-           errmsg.startswith('cvs checkout: cannot find module') or \
-           errmsg.startswith('cvs checkout: could not read RCS file'):
+        if (not errmsg or
+                errmsg.startswith('cvs checkout: cannot find module') or
+                errmsg.startswith('cvs checkout: could not read RCS file')):
             self.cleanup()
             raise FileNotFoundError(filename, revision)
 
@@ -315,10 +340,35 @@ class CVSClient(object):
         #
         # If the .cvspass file doesn't exist, CVS will return an error message
         # stating this. This is safe to ignore.
-        if (failure and not errmsg.startswith('==========')) and \
-           not ".cvspass does not exist - creating new file" in errmsg:
+        if ((failure and not errmsg.startswith('==========')) and
+                not '.cvspass does not exist - creating new file' in errmsg):
             self.cleanup()
             raise SCMError(errmsg)
 
         self.cleanup()
         return contents
+
+    def check_repository(self):
+        # Running 'cvs version' and specifying a CVSROOT will bail out if said
+        # CVSROOT is invalid, which is perfect for us. This used to use
+        # 'cvs rls' which is maybe slightly more correct, but rls is only
+        # available in CVS 1.12+
+        p = SCMTool.popen(['cvs', '-f', '-d', self.cvsroot, 'version'],
+                          self.local_site_name)
+        errmsg = six.text_type(p.stderr.read())
+
+        if p.wait() != 0:
+            logging.error('CVS repository validation failed for '
+                          'CVSROOT %s: %s',
+                          self.cvsroot, errmsg)
+
+            auth_failed_prefix = 'cvs version: authorization failed: '
+
+            # See if there's an "authorization failed" anywhere in here. If so,
+            # we want to raise AuthenticationError with that error message.
+            for line in errmsg.splitlines():
+                if line.startswith(auth_failed_prefix):
+                    raise AuthenticationError(
+                        msg=line[len(auth_failed_prefix):].strip())
+
+            raise SCMError(errmsg)

@@ -1,4 +1,4 @@
-describe('views/ReviewBoxView', function() {
+suite('rb/views/ReviewBoxView', function() {
     var view,
         reviewReply,
         template = _.template([
@@ -101,6 +101,11 @@ describe('views/ReviewBoxView', function() {
             it('Discard', function() {
                 spyOn(view, '_setupNewReply');
 
+                spyOn(reviewReply, 'discardIfEmpty')
+                    .andCallFake(function(options, context) {
+                        options.success.call(context);
+                    });
+
                 reviewReply.trigger('destroyed');
                 expect(view._setupNewReply).toHaveBeenCalled();
             });
@@ -125,20 +130,20 @@ describe('views/ReviewBoxView', function() {
             it('Signals connected', function() {
                 var reviewReply = new RB.ReviewReply();
 
-                spyOn(reviewReply, 'on');
+                spyOn(view, 'listenTo').andCallThrough();
 
                 view._setupNewReply(reviewReply);
 
-                expect(reviewReply.on.calls[0].args[0])
+                expect(view.listenTo.calls[0].args[1])
                     .toBe('destroyed published');
             });
 
             it('Signals disconnected from old reviewReply', function() {
-                spyOn(reviewReply, 'off');
+                spyOn(view, 'stopListening').andCallThrough();
 
                 view._setupNewReply();
 
-                expect(reviewReply.off).toHaveBeenCalledWith(null, null, view);
+                expect(view.stopListening).toHaveBeenCalledWith(reviewReply);
             });
 
             it('Draft banner hidden', function() {

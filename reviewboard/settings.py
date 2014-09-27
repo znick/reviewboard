@@ -1,6 +1,9 @@
 # Django settings for reviewboard project.
 
+from __future__ import unicode_literals
+
 import os
+import re
 import sys
 
 import djblets
@@ -44,18 +47,13 @@ EMAIL_SUBJECT_PREFIX = "[Review Board] "
 
 # If you set this to False, Django will make some optimizations so as not
 # to load the internationalization machinery.
-USE_I18N = False
-LANGUAGES = (
-    ('en', _('English')),
-    ('it', _('Italian')),
-    ('zh-tw', _('Traditional Chinese')),
-)
+USE_I18N = True
 
 # List of callables that know how to import templates from various sources.
 TEMPLATE_LOADERS = (
-    ('django.template.loaders.cached.Loader', (
+    ('djblets.template.loaders.conditional_cached.Loader', (
         'django.template.loaders.filesystem.Loader',
-        'django.template.loaders.app_directories.Loader',
+        'djblets.template.loaders.namespaced_app_dirs.Loader',
         'djblets.extensions.loaders.load_template_source',
     )),
 )
@@ -65,6 +63,7 @@ MIDDLEWARE_CLASSES = [
     'django.middleware.gzip.GZipMiddleware',
     'reviewboard.admin.middleware.InitReviewBoardMiddleware',
 
+    'django.middleware.clickjacking.XFrameOptionsMiddleware',
     'django.middleware.common.CommonMiddleware',
     'django.middleware.doc.XViewMiddleware',
     'django.middleware.http.ConditionalGetMiddleware',
@@ -83,28 +82,38 @@ MIDDLEWARE_CLASSES = [
     'reviewboard.admin.middleware.CheckUpdatesRequiredMiddleware',
     'reviewboard.admin.middleware.X509AuthMiddleware',
     'reviewboard.site.middleware.LocalSiteMiddleware',
+
+    # Keep this second to last so that everything is initialized before
+    # middleware from extensions are run.
+    'djblets.extensions.middleware.ExtensionsMiddlewareRunner',
+
+    # Keep this last so we can set the details for an exception as soon as
+    # possible.
+    'reviewboard.admin.middleware.ExtraExceptionInfoMiddleware',
 ]
 RB_EXTRA_MIDDLEWARE_CLASSES = []
 
 TEMPLATE_CONTEXT_PROCESSORS = (
     'django.contrib.auth.context_processors.auth',
+    'django.contrib.messages.context_processors.messages',
     'django.core.context_processors.debug',
     'django.core.context_processors.i18n',
     'django.core.context_processors.media',
     'django.core.context_processors.request',
     'django.core.context_processors.static',
+    'djblets.cache.context_processors.ajax_serial',
+    'djblets.cache.context_processors.media_serial',
     'djblets.siteconfig.context_processors.siteconfig',
-    'djblets.util.context_processors.settingsVars',
-    'djblets.util.context_processors.siteRoot',
-    'djblets.util.context_processors.ajaxSerial',
-    'djblets.util.context_processors.mediaSerial',
+    'djblets.siteconfig.context_processors.settings_vars',
+    'djblets.urls.context_processors.site_root',
     'reviewboard.accounts.context_processors.auth_backends',
+    'reviewboard.accounts.context_processors.profile',
     'reviewboard.admin.context_processors.version',
     'reviewboard.site.context_processors.localsite',
 )
 
 SITE_ROOT_URLCONF = 'reviewboard.urls'
-ROOT_URLCONF = 'djblets.util.rooturl'
+ROOT_URLCONF = 'djblets.urls.root'
 
 REVIEWBOARD_ROOT = os.path.abspath(os.path.split(__file__)[0])
 
@@ -119,12 +128,14 @@ TEMPLATE_DIRS = (
 STATICFILES_DIRS = (
     ('lib', os.path.join(REVIEWBOARD_ROOT, 'static', 'lib')),
     ('rb', os.path.join(REVIEWBOARD_ROOT, 'static', 'rb')),
-    ('djblets', os.path.join(os.path.dirname(djblets.__file__), 'media')),
+    ('djblets', os.path.join(os.path.dirname(djblets.__file__),
+                             'static', 'djblets')),
 )
 
 STATICFILES_FINDERS = (
     'django.contrib.staticfiles.finders.FileSystemFinder',
     'django.contrib.staticfiles.finders.AppDirectoriesFinder',
+    'djblets.extensions.staticfiles.ExtensionFinder',
 )
 
 STATICFILES_STORAGE = 'pipeline.storage.PipelineCachedStorage'
@@ -133,10 +144,11 @@ RB_BUILTIN_APPS = [
     'django.contrib.admin',
     'django.contrib.auth',
     'django.contrib.contenttypes',
-    'django.contrib.markup',
     'django.contrib.sites',
     'django.contrib.sessions',
     'django.contrib.staticfiles',
+    'djblets',
+    'djblets.configforms',
     'djblets.datagrid',
     'djblets.extensions',
     'djblets.feedview',
@@ -145,7 +157,7 @@ RB_BUILTIN_APPS = [
     'djblets.pipeline',
     'djblets.siteconfig',
     'djblets.util',
-    'djblets.webapi',
+    'haystack',
     'pipeline',  # Must be after djblets.pipeline
     'reviewboard',
     'reviewboard.accounts',
@@ -157,16 +169,29 @@ RB_BUILTIN_APPS = [
     'reviewboard.hostingsvcs',
     'reviewboard.notifications',
     'reviewboard.reviews',
-    'reviewboard.reviews.ui',
     'reviewboard.scmtools',
     'reviewboard.site',
-    'reviewboard.ssh',
     'reviewboard.webapi',
 ]
+
+# If installed, add django_reset to INSTALLED_APPS. This is used for the
+# 'manage.py reset' command, which is very useful during development.
+try:
+    import django_reset
+    RB_BUILTIN_APPS.append('django_reset')
+except ImportError:
+    pass
+
 RB_EXTRA_APPS = []
 
 WEB_API_ENCODERS = (
     'djblets.webapi.encoders.ResourceAPIEncoder',
+)
+
+# The backends that are used to authenticate requests against the web API.
+WEB_API_AUTH_BACKENDS = (
+    'djblets.webapi.auth.WebAPIBasicAuthBackend',
+    'reviewboard.webapi.auth_backends.WebAPITokenAuthBackend',
 )
 
 SESSION_ENGINE = 'django.contrib.sessions.backends.cached_db'
@@ -194,11 +219,11 @@ CACHE_EXPIRATION_TIME = 60 * 60 * 24 * 30  # 1 month
 # runner, as well as some special features like a code coverage report.
 TEST_RUNNER = 'reviewboard.test.RBTestRunner'
 
-# Dependency checker functionality.  Gives our users nice errors when they start
-# out, instead of encountering them later on.  Most of the magic for this
+# Dependency checker functionality.  Gives our users nice errors when they
+# start out, instead of encountering them later on.  Most of the magic for this
 # happens in manage.py, not here.
 install_help = '''
-Please see http://www.reviewboard.org/docs/manual/dev/admin/
+Please see https://www.reviewboard.org/docs/manual/dev/admin/
 for help setting up Review Board.
 '''
 
@@ -209,10 +234,15 @@ def dependency_error(string):
     sys.exit(1)
 
 if os.path.split(os.path.dirname(__file__))[1] != 'reviewboard':
-    dependency_error('The directory containing manage.py must be named "reviewboard"')
+    dependency_error('The directory containing manage.py must be named '
+                     '"reviewboard"')
 
 LOCAL_ROOT = None
 PRODUCTION = True
+
+# Default ALLOWED_HOSTS to allow everything. This should be overridden in
+# settings_local.py
+ALLOWED_HOSTS = ['*']
 
 # Cookie settings
 LANGUAGE_COOKIE_NAME = "rblanguage"
@@ -220,8 +250,26 @@ SESSION_COOKIE_NAME = "rbsessionid"
 SESSION_COOKIE_AGE = 365 * 24 * 60 * 60  # 1 year
 
 # Default support settings
-DEFAULT_SUPPORT_URL = 'http://www.beanbaginc.com/support/reviewboard/' \
-                      '?support-data=%(support_data)s'
+SUPPORT_URL_BASE = 'https://www.beanbaginc.com/support/reviewboard/'
+DEFAULT_SUPPORT_URL = SUPPORT_URL_BASE + '?support-data=%(support_data)s'
+REGISTER_SUPPORT_URL = (SUPPORT_URL_BASE +
+                        'register/?support-data=%(support_data)s')
+
+# Regular expression and flags used to match review request IDs in commit
+# messages for hosting service webhooks. These can be overriden in
+# settings_local.py.
+HOSTINGSVCS_HOOK_REGEX = (r'(?:Reviewed at %(server_url)sr/|Review request #)'
+                           '(?P<id>\d+)')
+HOSTINGSVCS_HOOK_REGEX_FLAGS = re.IGNORECASE
+
+
+# The SVN backends to attempt to load, in order. This is useful if more than
+# one type of backend is installed on a server, and you need to force usage
+# of a specific one.
+SVNTOOL_BACKENDS = [
+    'reviewboard.scmtools.svn.pysvn',
+    'reviewboard.scmtools.svn.subvertpy',
+]
 
 
 # Load local settings.  This can override anything in here, but at the very
@@ -229,7 +277,7 @@ DEFAULT_SUPPORT_URL = 'http://www.beanbaginc.com/support/reviewboard/' \
 try:
     import settings_local
     from settings_local import *
-except ImportError, exc:
+except ImportError as exc:
     dependency_error('Unable to import settings_local.py: %s' % exc)
 
 SESSION_COOKIE_PATH = SITE_ROOT
@@ -251,12 +299,28 @@ if not LOCAL_ROOT:
         # This is likely a site install. Get the parent directory.
         LOCAL_ROOT = os.path.dirname(local_dir)
 
+if PRODUCTION:
+    SITE_DATA_DIR = os.path.join(LOCAL_ROOT, 'data')
+else:
+    SITE_DATA_DIR = os.path.dirname(LOCAL_ROOT)
+
 HTDOCS_ROOT = os.path.join(LOCAL_ROOT, 'htdocs')
 STATIC_ROOT = os.path.join(HTDOCS_ROOT, 'static')
 MEDIA_ROOT = os.path.join(HTDOCS_ROOT, 'media')
-EXTENSIONS_STATIC_ROOT = os.path.join(MEDIA_ROOT, 'ext')
 ADMIN_MEDIA_ROOT = STATIC_ROOT + 'admin/'
 
+# XXX This is deprecated, but kept around for compatibility, in case any
+#     old extensions reference it. We'll want to deprecate it.
+EXTENSIONS_STATIC_ROOT = os.path.join(MEDIA_ROOT, 'ext')
+
+# Haystack requires this to be defined here, otherwise it will throw errors.
+# The actual PATH will be loaded through load_site_config()
+HAYSTACK_CONNECTIONS = {
+    'default': {
+        'ENGINE': 'haystack.backends.whoosh_backend.WhooshEngine',
+        'PATH': os.path.join(SITE_DATA_DIR, 'search-index'),
+    },
+}
 
 # Make sure that we have a staticfiles cache set up for media generation.
 # By default, we want to store this in local memory and not memcached or
@@ -273,7 +337,8 @@ if 'staticfiles' not in CACHES:
 #
 # Examples: "http://foo.com/media/", "/media/".
 STATIC_DIRECTORY = 'static/'
-STATIC_URL = getattr(settings_local, 'STATIC_URL', SITE_ROOT + STATIC_DIRECTORY)
+STATIC_URL = getattr(settings_local, 'STATIC_URL',
+                     SITE_ROOT + STATIC_DIRECTORY)
 
 MEDIA_DIRECTORY = 'media/'
 MEDIA_URL = getattr(settings_local, 'MEDIA_URL', SITE_ROOT + MEDIA_DIRECTORY)
@@ -281,268 +346,12 @@ MEDIA_URL = getattr(settings_local, 'MEDIA_URL', SITE_ROOT + MEDIA_DIRECTORY)
 
 # Base these on the user's SITE_ROOT.
 LOGIN_URL = SITE_ROOT + 'account/login/'
+LOGIN_REDIRECT_URL = SITE_ROOT + 'dashboard/'
 
-# Media compression
-PIPELINE_JS = {
-    '3rdparty': {
-        'source_filenames': (
-            'lib/js/flot/jquery.flot.min.js',
-            'lib/js/flot/jquery.flot.pie.min.js',
-            'lib/js/flot/jquery.flot.selection.min.js',
-            'lib/js/flot/jquery.flot.time.min.js',
-            'lib/js/underscore-1.4.4.min.js',
-            'lib/js/backbone-1.0.0.min.js',
-            'lib/js/jquery.cookie-1.3.1.js',
-            'lib/js/jquery.form.js',
-            'lib/js/jquery.timesince.js',
-            'lib/js/moment-2.0.0.min.js',
-            'lib/js/retina.js',
-            'lib/js/ui.autocomplete.js',
-            'lib/js/google-code-prettify/prettify.js',
-            'lib/js/marked.js',
-        ),
-        'output_filename': 'lib/js/3rdparty.min.js',
-    },
-    'js-tests': {
-        'source_filenames': (
-            'lib/js/jasmine-1.3.1.js',
-            'lib/js/jasmine-html-1.3.1.js',
-            'rb/js/collections/tests/resourceCollectionTests.js',
-            'rb/js/diffviewer/models/tests/diffReviewableModelTests.js',
-            'rb/js/diffviewer/views/tests/diffReviewableViewTests.js',
-            'rb/js/models/tests/commentEditorModelTests.js',
-            'rb/js/models/tests/reviewReplyEditorModelTests.js',
-            'rb/js/models/tests/reviewRequestEditorModelTests.js',
-            'rb/js/models/tests/userSessionModelTests.js',
-            'rb/js/newReviewRequest/views/tests/branchesViewTests.js',
-            'rb/js/newReviewRequest/views/tests/postCommitViewTests.js',
-            'rb/js/newReviewRequest/views/tests/repositorySelectionViewTests.js',
-            'rb/js/pages/models/tests/pageManagerModelTests.js',
-            'rb/js/pages/views/tests/reviewablePageViewTests.js',
-            'rb/js/resources/collections/tests/repositoryBranchesCollectionTests.js',
-            'rb/js/resources/collections/tests/repositoryCommitsCollectionTests.js',
-            'rb/js/resources/models/tests/baseCommentModelTests.js',
-            'rb/js/resources/models/tests/baseCommentReplyModelTests.js',
-            'rb/js/resources/models/tests/baseResourceModelTests.js',
-            'rb/js/resources/models/tests/diffCommentModelTests.js',
-            'rb/js/resources/models/tests/draftReviewModelTests.js',
-            'rb/js/resources/models/tests/draftReviewRequestModelTests.js',
-            'rb/js/resources/models/tests/fileAttachmentModelTests.js',
-            'rb/js/resources/models/tests/fileAttachmentCommentModelTests.js',
-            'rb/js/resources/models/tests/fileDiffModelTests.js',
-            'rb/js/resources/models/tests/screenshotModelTests.js',
-            'rb/js/resources/models/tests/screenshotCommentModelTests.js',
-            'rb/js/resources/models/tests/repositoryBranchModelTests.js',
-            'rb/js/resources/models/tests/repositoryCommitModelTests.js',
-            'rb/js/resources/models/tests/reviewGroupModelTests.js',
-            'rb/js/resources/models/tests/reviewModelTests.js',
-            'rb/js/resources/models/tests/reviewReplyModelTests.js',
-            'rb/js/resources/models/tests/reviewRequestModelTests.js',
-            'rb/js/resources/models/tests/validateDiffModelTests.js',
-            'rb/js/utils/tests/keyBindingUtilsTests.js',
-            'rb/js/utils/tests/linkifyUtilsTests.js',
-            'rb/js/utils/tests/propertyUtilsTests.js',
-            'rb/js/views/tests/collectionViewTests.js',
-            'rb/js/views/tests/commentDialogViewTests.js',
-            'rb/js/views/tests/commentIssueBarViewTests.js',
-            'rb/js/views/tests/diffFragmentQueueViewTests.js',
-            'rb/js/views/tests/draftReviewBannerViewTests.js',
-            'rb/js/views/tests/fileAttachmentThumbnailViewTests.js',
-            'rb/js/views/tests/reviewBoxViewTests.js',
-            'rb/js/views/tests/reviewBoxListViewTests.js',
-            'rb/js/views/tests/reviewDialogViewTests.js',
-            'rb/js/views/tests/reviewRequestEditorViewTests.js',
-            'rb/js/views/tests/reviewReplyDraftBannerViewTests.js',
-            'rb/js/views/tests/reviewReplyEditorViewTests.js',
-            'rb/js/views/tests/screenshotThumbnailViewTests.js',
-        ),
-        'output_filename': 'rb/js/js-tests.min.js',
-    },
-    'common': {
-        'source_filenames': (
-            'rb/js/utils/backboneUtils.js',
-            'rb/js/utils/compatUtils.js',
-            'rb/js/utils/consoleUtils.js',
-            'rb/js/utils/propertyUtils.js',
-            'rb/js/utils/underscoreUtils.js',
-            'rb/js/common.js',
-            'rb/js/utils/apiErrors.js',
-            'rb/js/utils/apiUtils.js',
-            'rb/js/utils/linkifyUtils.js',
-            'rb/js/utils/keyBindingUtils.js',
-            'rb/js/collections/baseCollection.js',
-            'rb/js/pages/models/pageManagerModel.js',
-            'rb/js/resources/models/baseResourceModel.js',
-            'rb/js/resources/models/draftResourceModelMixin.js',
-            'rb/js/resources/models/draftReviewRequestModel.js',
-            'rb/js/resources/models/reviewModel.js',
-            'rb/js/resources/models/draftReviewModel.js',
-            'rb/js/resources/models/baseCommentModel.js',
-            'rb/js/resources/models/baseCommentReplyModel.js',
-            'rb/js/resources/models/diffCommentModel.js',
-            'rb/js/resources/models/diffCommentReplyModel.js',
-            'rb/js/resources/models/diffModel.js',
-            'rb/js/resources/models/fileAttachmentModel.js',
-            'rb/js/resources/models/fileAttachmentCommentModel.js',
-            'rb/js/resources/models/fileAttachmentCommentReplyModel.js',
-            'rb/js/resources/models/fileDiffModel.js',
-            'rb/js/resources/models/reviewGroupModel.js',
-            'rb/js/resources/models/reviewReplyModel.js',
-            'rb/js/resources/models/reviewRequestModel.js',
-            'rb/js/resources/models/screenshotModel.js',
-            'rb/js/resources/models/screenshotCommentModel.js',
-            'rb/js/resources/models/screenshotCommentReplyModel.js',
-            'rb/js/resources/collections/resourceCollection.js',
-            'rb/js/models/userSessionModel.js',
-        ),
-        'output_filename': 'rb/js/base.min.js',
-    },
-    'reviews': {
-        'source_filenames': (
-            # Note: These are roughly in dependency order.
-            'rb/js/models/abstractCommentBlockModel.js',
-            'rb/js/models/abstractReviewableModel.js',
-            'rb/js/models/commentEditorModel.js',
-            'rb/js/models/commentIssueManagerModel.js',
-            'rb/js/models/fileAttachmentCommentBlockModel.js',
-            'rb/js/models/fileAttachmentReviewableModel.js',
-            'rb/js/models/regionCommentBlockModel.js',
-            'rb/js/models/reviewReplyEditorModel.js',
-            'rb/js/models/reviewRequestEditorModel.js',
-            'rb/js/models/imageReviewableModel.js',
-            'rb/js/models/screenshotCommentBlockModel.js',
-            'rb/js/models/screenshotReviewableModel.js',
-            'rb/js/models/textBasedCommentBlockModel.js',
-            'rb/js/models/textBasedReviewableModel.js',
-            'rb/js/models/markdownReviewableModel.js',
-            'rb/js/pages/views/reviewablePageView.js',
-            'rb/js/pages/views/reviewRequestPageView.js',
-            'rb/js/pages/views/diffViewerPageView.js',
-            'rb/js/utils/textUtils.js',
-            'rb/js/views/abstractCommentBlockView.js',
-            'rb/js/views/abstractReviewableView.js',
-            'rb/js/views/collapsableBoxView.js',
-            'rb/js/views/commentDialogView.js',
-            'rb/js/views/commentIssueBarView.js',
-            'rb/js/views/diffFragmentQueueView.js',
-            'rb/js/views/dndUploaderView.js',
-            'rb/js/views/draftReviewBannerView.js',
-            'rb/js/views/fileAttachmentCommentBlockView.js',
-            'rb/js/views/fileAttachmentReviewableView.js',
-            'rb/js/views/fileAttachmentThumbnailView.js',
-            'rb/js/views/floatingBannerView.js',
-            'rb/js/views/issueSummaryTableView.js',
-            'rb/js/views/regionCommentBlockView.js',
-            'rb/js/views/reviewBoxListView.js',
-            'rb/js/views/reviewBoxView.js',
-            'rb/js/views/reviewDialogView.js',
-            'rb/js/views/reviewReplyDraftBannerView.js',
-            'rb/js/views/reviewReplyEditorView.js',
-            'rb/js/views/reviewRequestEditorView.js',
-            'rb/js/views/screenshotThumbnailView.js',
-            'rb/js/views/imageReviewableView.js',
-            'rb/js/views/textBasedCommentBlockView.js',
-            'rb/js/views/textBasedReviewableView.js',
-            'rb/js/views/markdownReviewableView.js',
-            'rb/js/diffviewer/models/diffCommentBlockModel.js',
-            'rb/js/diffviewer/models/diffReviewableModel.js',
-            'rb/js/diffviewer/views/chunkHighlighterView.js',
-            'rb/js/diffviewer/views/diffCommentBlockView.js',
-            'rb/js/diffviewer/views/diffReviewableView.js',
-            'rb/js/diffviewer.js',
-            'rb/js/reviews.js',
-        ),
-        'output_filename': 'rb/js/reviews.min.js',
-    },
-    'newReviewRequest': {
-        'source_filenames': (
-            # Note: These are roughly in dependency order.
-            'rb/js/resources/models/repositoryBranchModel.js',
-            'rb/js/resources/models/repositoryCommitModel.js',
-            'rb/js/resources/collections/repositoryBranchesCollection.js',
-            'rb/js/resources/collections/repositoryCommitsCollection.js',
-            'rb/js/resources/models/repositoryModel.js',
-            'rb/js/resources/models/validateDiffModel.js',
-            'rb/js/newReviewRequest/models/postCommitModel.js',
-            'rb/js/newReviewRequest/models/preCommitModel.js',
-            'rb/js/newReviewRequest/models/newReviewRequestModel.js',
-            'rb/js/views/collectionView.js',
-            'rb/js/newReviewRequest/views/branchView.js',
-            'rb/js/newReviewRequest/views/branchesView.js',
-            'rb/js/newReviewRequest/views/commitView.js',
-            'rb/js/newReviewRequest/views/commitsView.js',
-            'rb/js/newReviewRequest/views/repositoryView.js',
-            'rb/js/newReviewRequest/views/repositorySelectionView.js',
-            'rb/js/newReviewRequest/views/postCommitView.js',
-            'rb/js/newReviewRequest/views/preCommitView.js',
-            'rb/js/newReviewRequest/views/newReviewRequestView.js',
-        ),
-        'output_filename': 'rb/js/newReviewRequest.min.js',
-    },
-    'admin': {
-        'source_filenames': (
-            'lib/js/jquery.masonry.js',
-            'rb/js/admin.js',
-        ),
-        'output_filename': 'rb/js/admin.min.js',
-    },
-    'repositoryform': {
-        'source_filenames': (
-            'rb/js/repositoryform.js',
-        ),
-        'output_filename': 'rb/js/repositoryform.min.js',
-    },
-}
 
-PIPELINE_CSS = {
-    'common': {
-        'source_filenames': (
-            'lib/css/jquery-ui-1.8.24.min.css',
-            'rb/css/common.less',
-            'rb/css/dashboard.less',
-            'rb/css/icons.less',
-            'rb/css/search.less',
-        ),
-        'output_filename': 'rb/css/common.min.css',
-        'absolute_paths': False,
-    },
-    'js-tests': {
-        'source_filenames': (
-            'rb/css/js-tests.less',
-        ),
-        'output_filename': 'rb/css/js-tests.min.css',
-        'absolute_paths': False,
-    },
-    'reviews': {
-        'source_filenames': (
-            'lib/css/prettify.css',
-            'rb/css/diffviewer.less',
-            'rb/css/dndUploader.less',
-            'rb/css/image-review-ui.less',
-            'rb/css/reviews.less',
-            'rb/css/syntax.css',
-        ),
-        'output_filename': 'rb/css/reviews.min.css',
-        'absolute_paths': False,
-    },
-    'newReviewRequest': {
-        'source_filenames': (
-            'rb/css/newReviewRequest.less',
-        ),
-        'output_filename': 'rb/css/newReviewRequest.min.css',
-        'absolute_paths': False,
-    },
-    'admin': {
-        'source_filenames': (
-            'rb/css/admin.less',
-            'rb/css/admin-dashboard.less',
-        ),
-        'output_filename': 'rb/css/admin.min.css',
-        'absolute_paths': False,
-    },
-}
+# Static media setup
+from reviewboard.staticbundles import PIPELINE_CSS, PIPELINE_JS
 
-BLESS_IMPORT_PATHS = ('rb/css/',)
 PIPELINE_CSS_COMPRESSOR = None
 PIPELINE_JS_COMPRESSOR = 'pipeline.compressors.uglifyjs.UglifyJSCompressor'
 
@@ -557,11 +366,10 @@ PIPELINE_JS_COMPRESSOR = 'pipeline.compressors.uglifyjs.UglifyJSCompressor'
 
 if PRODUCTION or not DEBUG or os.getenv('FORCE_BUILD_MEDIA', ''):
     PIPELINE_COMPILERS = ['pipeline.compilers.less.LessCompiler']
-
-    PIPELINE = True
+    PIPELINE_ENABLED = True
 elif DEBUG:
     PIPELINE_COMPILERS = []
-    PIPELINE = False
+    PIPELINE_ENABLED = False
 
 # Packages to unit test
 TEST_PACKAGES = ['reviewboard']

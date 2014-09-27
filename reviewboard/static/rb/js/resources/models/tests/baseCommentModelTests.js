@@ -1,4 +1,4 @@
-describe('resources/models/BaseComment', function() {
+suite('rb/resources/models/BaseComment', function() {
     var strings = RB.BaseComment.strings,
         parentObject,
         model;
@@ -128,6 +128,16 @@ describe('resources/models/BaseComment', function() {
 
                 data = model.toJSON();
                 expect(data.issue_status).toBe(RB.BaseComment.STATE_DROPPED);
+            });
+        });
+
+        describe('richText field', function() {
+            it('With value', function() {
+                var data;
+
+                model.set('richText', true);
+                data = model.toJSON();
+                expect(data.text_type).toBe('markdown');
             });
         });
 

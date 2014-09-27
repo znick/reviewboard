@@ -17,13 +17,17 @@ RB.AbstractReviewableView = Backbone.View.extend({
     /*
      * Initializes AbstractReviewableView.
      */
-    initialize: function() {
+    initialize: function(options) {
+        options = options || {};
+
         console.assert(this.commentBlockView,
                        'commentBlockView must be defined by the subclass');
         console.assert(this.commentsListName,
                        'commentsListName must be defined by the subclass');
 
         this.commentDlg = null;
+        this._activeCommentBlock = null;
+        this.renderedInline = options.renderedInline || false;
     },
 
     /*
@@ -82,6 +86,11 @@ RB.AbstractReviewableView = Backbone.View.extend({
 
         commentBlock.ensureDraftComment();
 
+        if (this._activeCommentBlock === commentBlock) {
+            return;
+        }
+
+        this.stopListening(this.commentDlg, 'closed');
         this.commentDlg = RB.CommentDialogView.create({
             comment: commentBlock.get('draftComment'),
             publishedComments: commentBlock.get('serializedComments'),
@@ -90,10 +99,12 @@ RB.AbstractReviewableView = Backbone.View.extend({
                 commentBlockView.positionCommentDlg(dlg);
             }
         });
+        this._activeCommentBlock = commentBlock;
 
-        this.commentDlg.on('closed', function() {
+        this.listenTo(this.commentDlg, 'closed', function() {
             this.commentDlg = null;
-        }, this);
+            this._activeCommentBlock = null;
+        });
     },
 
     /*

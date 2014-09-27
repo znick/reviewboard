@@ -45,8 +45,7 @@ var UpdatesBubbleView = Backbone.View.extend({
      */
     open: function() {
         this.$el
-            .css('position', $.browser.msie && $.browser.version === 6
-                             ? 'absolute' : 'fixed')
+            .css('position', 'fixed')
             .fadeIn();
     },
 
@@ -149,16 +148,13 @@ RB.ReviewablePageView = Backbone.View.extend({
         this._updatesBubble = null;
         this._favIconURL = null;
         this._favIconNotifyURL = null;
-
-        /* XXX This is needed until other code is moved over. */
-        window.gReviewRequest = this.reviewRequest;
     },
 
     /*
      * Renders the page.
      */
     render: function() {
-        var $favicon = $('head').find('link[rel=icon]');
+        var $favicon = $('head').find('link[rel="shortcut icon"]');
 
         this._favIconURL = $favicon.attr('href');
         this._favIconNotifyURL = STATIC_URLS['rb/images/favicon_notify.ico'];
@@ -177,6 +173,10 @@ RB.ReviewablePageView = Backbone.View.extend({
 
         this._registerForUpdates();
 
+        // Assign handler for the 'Add File' button
+        this.$('#upload-file-link').click(
+            _.bind(this._onUploadFileClicked, this));
+
         return this;
     },
 
@@ -190,7 +190,7 @@ RB.ReviewablePageView = Backbone.View.extend({
      */
     _registerForUpdates: function() {
         this.listenTo(this.reviewRequest, 'updated', function(info) {
-            this._updateFavIcon(this._faviconNotifyURL);
+            this._updateFavIcon(this._favIconNotifyURL);
 
             if (this._updatesBubble) {
                 this._updatesBubble.remove();
@@ -226,13 +226,13 @@ RB.ReviewablePageView = Backbone.View.extend({
      */
     _updateFavIcon: function(url) {
         $('head')
-            .find('link[rel=icon]')
+            .find('link[rel="shortcut icon"]')
                 .remove()
             .end()
             .append($('<link/>')
                 .attr({
                     href: url,
-                    rel: 'icon',
+                    rel: 'shortcut icon',
                     type: 'image/x-icon'
                 }));
     },
@@ -252,6 +252,18 @@ RB.ReviewablePageView = Backbone.View.extend({
     },
 
     /*
+     * Handler for when the "Add File" link is clicked.
+     *
+     * Displays popup for attachment upload.
+     */
+    _onUploadFileClicked: function() {
+        var uploadDialog = new RB.UploadAttachmentView({
+            reviewRequest: this.reviewRequest
+        });
+        uploadDialog.render();
+    },
+
+    /*
      * Handler for when Ship It is clicked.
      *
      * Confirms that the user wants to post the review, and then posts it
@@ -263,7 +275,8 @@ RB.ReviewablePageView = Backbone.View.extend({
                 ready: function() {
                     this.pendingReview.set({
                         shipIt: true,
-                        bodyTop: gettext('Ship It!')
+                        bodyTop: gettext('Ship It!'),
+                        richText: true
                     });
                     this.pendingReview.publish();
                 }

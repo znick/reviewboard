@@ -1,18 +1,16 @@
+from __future__ import unicode_literals
+
 import logging
 import re
 
-try:
-    from urllib2 import quote as urllib_quote
-except ImportError:
-    from urllib import quote as urllib_quote
-
-from pkg_resources import parse_version
+from django.utils import six
+from django.utils.six.moves.urllib.parse import quote as urllib_quote
+from djblets.util.filesystem import is_exe_in_path
 
 from reviewboard.diffviewer.parser import DiffParser, DiffParserError
 from reviewboard.scmtools.git import GitDiffParser
 from reviewboard.scmtools.core import \
     FileNotFoundError, SCMClient, SCMTool, HEAD, PRE_CREATION, UNKNOWN
-from reviewboard.scmtools.errors import RepositoryNotFoundError
 
 
 class HgTool(SCMTool):
@@ -23,18 +21,26 @@ class HgTool(SCMTool):
     }
 
     def __init__(self, repository):
-        SCMTool.__init__(self, repository)
+        super(HgTool, self).__init__(repository)
+
+        if not is_exe_in_path('hg'):
+            # This is technically not the right kind of error, but it's the
+            # pattern we use with all the other tools.
+            raise ImportError
+
         if repository.path.startswith('http'):
+            credentials = repository.get_credentials()
+
             self.client = HgWebClient(repository.path,
-                                      repository.username,
-                                      repository.password)
+                                      credentials['username'],
+                                      credentials['password'])
         else:
             self.client = HgClient(repository.path, repository.local_site)
 
         self.uses_atomic_revisions = True
 
     def get_file(self, path, revision=HEAD):
-        return self.client.cat_file(path, str(revision))
+        return self.client.cat_file(path, six.text_type(revision))
 
     def parse_diff_revision(self, file_str, revision_str, *args, **kwargs):
         revision = revision_str
@@ -51,7 +57,7 @@ class HgTool(SCMTool):
         return ['diff_path', 'parent_diff_path']
 
     def get_parser(self, data):
-        if data.lstrip().startswith('diff --git'):
+        if data.lstrip().startswith(b'diff --git'):
             return GitDiffParser(data)
         else:
             return HgDiffParser(data)
@@ -75,70 +81,78 @@ class HgDiffParser(DiffParser):
     This class is able to extract Mercurial changeset ids, and
     replaces /dev/null with a useful name
     """
-    newChangesetId = None
-    origChangesetId = None
-    isGitDiff = False
+    new_changeset_id = None
+    orig_changeset_id = None
+    is_git_diff = False
 
     def parse_special_header(self, linenum, info):
-        diffLine = self.lines[linenum].split()
+        diff_line = self.lines[linenum]
+        split_line = diff_line.split()
 
         # git style diffs are supported as long as the node ID and parent ID
         # are present in the patch header
-        if self.lines[linenum].startswith("# Node ID") and len(diffLine) == 4:
-            self.newChangesetId = diffLine[3]
-        elif self.lines[linenum].startswith("# Parent") and len(diffLine) == 3:
-            self.origChangesetId = diffLine[2]
-        elif self.lines[linenum].startswith("diff -r"):
+        if diff_line.startswith(b"# Node ID") and len(split_line) == 4:
+            self.new_changeset_id = split_line[3]
+        elif diff_line.startswith(b"# Parent") and len(split_line) == 3:
+            self.orig_changeset_id = split_line[2]
+        elif diff_line.startswith(b"diff -r"):
             # diff between two revisions are in the following form:
             #  "diff -r abcdef123456 -r 123456abcdef filename"
             # diff between a revision and the working copy are like:
             #  "diff -r abcdef123456 filename"
-            self.isGitDiff = False
+            self.is_git_diff = False
             try:
                 # ordinary hg diffs don't record renames, so
                 # new file always == old file
-                isCommitted = len(diffLine) > 4 and diffLine[3] == '-r'
-                if isCommitted:
-                    nameStartIndex = 5
-                    info['newInfo'] = diffLine[4]
+                if len(split_line) > 4 and split_line[3] == b'-r':
+                    # Committed revision
+                    name_start_ix = 5
+                    info['newInfo'] = split_line[4]
                 else:
-                    nameStartIndex = 3
+                    # Uncommitted revision
+                    name_start_ix = 3
                     info['newInfo'] = "Uncommitted"
-                info['newFile'] = info['origFile'] = \
-                    ' '.join(diffLine[nameStartIndex:])
-                info['origInfo'] = diffLine[2]
-                info['origChangesetId'] = diffLine[2]
+
+                info['newFile'] = info['origFile'] = b' '.join(
+                    split_line[name_start_ix:])
+                info['origInfo'] = split_line[2]
+                info['origChangesetId'] = split_line[2]
+                self.orig_changeset_id = split_line[2]
             except ValueError:
                 raise DiffParserError("The diff file is missing revision "
                                       "information", linenum)
             linenum += 1
 
-        elif self.lines[linenum].startswith("diff --git") and \
-            self.origChangesetId:
+        elif (diff_line.startswith(b"diff --git") and
+              self.orig_changeset_id):
             # diff is in the following form:
             #  "diff --git a/origfilename b/newfilename"
             # possibly followed by:
             #  "{copy|rename} from origfilename"
             #  "{copy|rename} from newfilename"
-            self.isGitDiff = True
-            info['origInfo'] = info['origChangesetId'] = self.origChangesetId
-            if not self.newChangesetId:
+            self.is_git_diff = True
+
+            info['origInfo'] = self.orig_changeset_id
+            info['origChangesetId'] = self.orig_changeset_id
+
+            if not self.new_changeset_id:
                 info['newInfo'] = "Uncommitted"
             else:
-                info['newInfo'] = self.newChangesetId
-            lineMatch = re.search(
+                info['newInfo'] = self.new_changeset_id
+
+            match = re.search(
                 r' a/(.*?) b/(.*?)( (copy|rename) from .*)?$',
-                self.lines[linenum])
-            info['origFile'] = lineMatch.group(1)
-            info['newFile'] = lineMatch.group(2)
+                diff_line)
+            info['origFile'] = match.group(1)
+            info['newFile'] = match.group(2)
             linenum += 1
 
         return linenum
 
     def parse_diff_header(self, linenum, info):
-        if not self.isGitDiff:
-            if linenum <= len(self.lines) and \
-               self.lines[linenum].startswith("Binary file "):
+        if not self.is_git_diff:
+            if (linenum <= len(self.lines) and
+                self.lines[linenum].startswith(b"Binary file ")):
                 info['binary'] = True
                 linenum += 1
 
@@ -148,21 +162,21 @@ class HgDiffParser(DiffParser):
         else:
             while linenum < len(self.lines):
                 if self._check_file_diff_start(linenum, info):
-                    self.isGitDiff = False
+                    self.is_git_diff = False
                     linenum += 2
                     return linenum
 
                 line = self.lines[linenum]
-                if (line.startswith("Binary file") or
-                    line.startswith("GIT binary")):
+                if (line.startswith(b"Binary file") or
+                    line.startswith(b"GIT binary")):
                     info['binary'] = True
                     linenum += 1
-                elif (line.startswith("copy") or
-                      line.startswith("rename") or
-                      line.startswith("new") or
-                      line.startswith("old") or
-                      line.startswith("deleted") or
-                      line.startswith("index")):
+                elif (line.startswith(b"copy") or
+                      line.startswith(b"rename") or
+                      line.startswith(b"new") or
+                      line.startswith(b"old") or
+                      line.startswith(b"deleted") or
+                      line.startswith(b"index")):
                     # Not interested, just pass over this one
                     linenum += 1
                 else:
@@ -171,15 +185,20 @@ class HgDiffParser(DiffParser):
         return linenum
 
     def get_orig_commit_id(self):
-        return self.origChangesetId
+        return self.orig_changeset_id
 
     def _check_file_diff_start(self, linenum, info):
         if (linenum + 1 < len(self.lines) and
-            (self.lines[linenum].startswith('--- ') and
-             self.lines[linenum + 1].startswith('+++ '))):
+            (self.lines[linenum].startswith(b'--- ') and
+             self.lines[linenum + 1].startswith(b'+++ '))):
             # check if we're a new file
-            if self.lines[linenum].split()[1] == "/dev/null":
+            if self.lines[linenum].split()[1] == b"/dev/null":
                 info['origInfo'] = PRE_CREATION
+
+            # Check if this is a deleted file.
+            if self.lines[linenum + 1].split()[1] == b'/dev/null':
+                info['deleted'] = True
+
             return True
         else:
             return False
@@ -203,13 +222,8 @@ class HgWebClient(SCMClient):
 
         for rawpath in ["raw-file", "raw", "hg-history"]:
             try:
-                base_url = self.path.rstrip('/')
-
-                if rawpath == 'hg-history':
-                    base_url = self.path[:self.path.rfind('/')]
-
                 url = self.FULL_FILE_URL % {
-                    'url': base_url,
+                    'url': self.path.rstrip('/'),
                     'rawpath': rawpath,
                     'revision': rev,
                     'quoted_path': urllib_quote(path.lstrip('/')),
@@ -223,58 +237,15 @@ class HgWebClient(SCMClient):
         raise FileNotFoundError(path, rev)
 
 
-class HgClient(object):
-    def __init__(self, repoPath, local_site):
-        from mercurial import hg, ui, error
+class HgClient(SCMClient):
+    def __init__(self, path, local_site):
+        super(HgClient, self).__init__(path)
+        self.default_args = None
 
-        # We've encountered problems getting the Mercurial version number.
-        # Originally, we imported 'version' from mercurial.__version__,
-        # which would sometimes return None.
-        #
-        # We are now trying to go through their version() function, if
-        # available. That is likely the most reliable.
-        try:
-            from mercurial.util import version
-            hg_version = version()
-        except ImportError:
-            # If version() wasn't available, we'll try to import __version__
-            # ourselves, and then get 'version' from that.
-            try:
-                from mercurial import __version__
-                hg_version = __version__.version
-            except ImportError:
-                # If that failed, we'll hard-code an empty string. This will
-                # trigger the "<= 1.2" case below.
-                hg_version = ''
-
-        # If something gave us None, convert it to an empty string so
-        # parse_version can accept it.
-        if hg_version is None:
-            hg_version = ''
-
-        if parse_version(hg_version) <= parse_version("1.2"):
-            hg_ui = ui.ui(interactive=False)
+        if local_site:
+            self.local_site_name = local_site.name
         else:
-            hg_ui = ui.ui()
-            hg_ui.setconfig('ui', 'interactive', 'off')
-
-        # Check whether ssh is configured for mercurial. Assume that any
-        # configured ssh is set up correctly for this repository.
-        hg_ssh = hg_ui.config('ui', 'ssh')
-
-        if not hg_ssh:
-            logging.debug('Using rbssh for mercurial')
-            hg_ui.setconfig('ui', 'ssh', 'rbssh --rb-local-site=%s'
-                            % local_site)
-        else:
-            logging.debug('Found configured ssh for mercurial: %s' % hg_ssh)
-
-        try:
-            self.repo = hg.repository(hg_ui, path=repoPath)
-        except error.RepoError, e:
-            logging.error('Error connecting to Mercurial repository %s: %s'
-                          % (repoPath, e))
-            raise RepositoryNotFoundError
+            self.local_site_name = None
 
     def cat_file(self, path, rev="tip"):
         if rev == HEAD:
@@ -282,9 +253,60 @@ class HgClient(object):
         elif rev == PRE_CREATION:
             rev = ""
 
-        try:
-            return self.repo.changectx(rev).filectx(path).data()
-        except Exception, e:
-            # LookupError moves from repo to revlog in hg v0.9.4, so we
-            # catch the more general Exception to avoid the dependency.
-            raise FileNotFoundError(path, rev, detail=str(e))
+        if path:
+            p = self._run_hg(['cat', '--rev', rev, path])
+            contents = p.stdout.read()
+            failure = p.wait()
+
+            if not failure:
+                return contents
+
+        raise FileNotFoundError(path, rev)
+
+    def _calculate_default_args(self):
+        self.default_args = [
+            '--noninteractive',
+            '--repository', self.path,
+            '--cwd', self.path,
+        ]
+
+        # We need to query hg for the current SSH configuration. Note
+        # that _run_hg is calling this function, and this function is then
+        # (through _get_hg_config) calling _run_hg, but it's okay. Due to
+        # having set a good default for self.default_args above, there's no
+        # issue of an infinite loop.
+        hg_ssh = self._get_hg_config('ui.ssh')
+
+        if not hg_ssh:
+            logging.debug('Using rbssh for mercurial')
+
+            if self.local_site_name:
+                hg_ssh = 'rbssh --rb-local-site=%s' % self.local_site_name
+            else:
+                hg_ssh = 'rbssh'
+
+            self.default_args.extend([
+                '--config', 'ui.ssh=%s' % hg_ssh,
+            ])
+        else:
+            logging.debug('Found configured ssh for mercurial: %s' % hg_ssh)
+
+    def _get_hg_config(self, config_name):
+        p = self._run_hg(['showconfig', config_name])
+        contents = p.stdout.read()
+        failure = p.wait()
+
+        if failure:
+            # Just assume it's empty.
+            return None
+
+        return contents.strip()
+
+    def _run_hg(self, args):
+        """Runs the Mercurial command, returning a subprocess.Popen."""
+        if not self.default_args:
+            self._calculate_default_args()
+
+        return SCMTool.popen(
+            ['hg'] + self.default_args + args,
+            local_site_name=self.local_site_name)

@@ -1,7 +1,8 @@
-from django_evolution.mutations import AddField, RenameField
+from __future__ import unicode_literals
 
-from djblets.util.fields import Base64Field
-from djblets.util.dbevolution import FakeChangeFieldType
+from django_evolution.mutations import AddField, RenameField
+from djblets.db.evolution import FakeChangeFieldType
+from djblets.db.fields import Base64Field
 
 
 MUTATIONS = [

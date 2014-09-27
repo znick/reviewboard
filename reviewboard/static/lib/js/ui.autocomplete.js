@@ -40,6 +40,7 @@ $.widget("ui.rbautocomplete", {
         },
         scroll: true,
         clickToURL: false,
+        enterToURL: false,
         scrollHeight: 180
     },
 
@@ -121,10 +122,11 @@ $.widget("ui.rbautocomplete", {
                     }
                     break;
 
-                // matches also semicolon
-                case options.multiple && $.trim(options.multipleSeparator) == "," && KEY.COMMA:
                 case KEY.TAB:
                 case KEY.ENTER:
+                    if (options.enterToURL && select.current()){
+                        select.current().click();
+                    }
                     if( selectCurrent() ) {
                         // stop default to prevent a form submit, Opera needs special handling
                         event.preventDefault();
@@ -188,21 +190,28 @@ $.widget("ui.rbautocomplete", {
             $(input.form).unbind(".rbautocomplete");
         });
 
-
         // Private methods
         function selectCurrent() {
             var selected = select.selected();
-            if( !selected )
+
+            // Return if none selected or input does not match the first item.
+            if (!selected ||
+                selected.result.indexOf(lastWord($input.val())) !== 0) {
                 return false;
+            }
 
             var v = selected.result;
             previousValue = v;
 
-            if ( options.multiple ) {
+            if (options.multiple) {
                 var words = trimWords($input.val());
-                if ( words.length > 1 ) {
-                    v = words.slice(0, words.length - 1).join( options.multipleSeparator ) + options.multipleSeparator + v;
+
+                if (words.length > 1) {
+                    v = words.slice(0, words.length - 1)
+                        .join(options.multipleSeparator)
+                        + options.multipleSeparator + v;
                 }
+
                 v += options.multipleSeparator;
             }
 
@@ -213,11 +222,6 @@ $.widget("ui.rbautocomplete", {
         };
 
         function onChange(crap, skipPrevCheck) {
-            if( lastKeyPressCode == $.ui.keyCode.DELETE ) {
-                select.hide();
-                return;
-            }
-
             var currentValue = $input.val();
 
             if ( !skipPrevCheck && currentValue == previousValue )
@@ -346,6 +350,11 @@ $.widget("ui.rbautocomplete", {
                         var parsed = options.parse && options.parse(data) || parse(data);
                         cache.add(term, parsed);
                         success(term, parsed);
+                    },
+                    error: function(xhr, textStatus, errorThrown) {
+                        if (options.error) {
+                            options.error(xhr, textStatus, errorThrown);
+                        }
                     }
                 });
             }
@@ -665,6 +674,12 @@ $.ui.rbautocomplete.select = function (options, input, select, config) {
     }
 
     function fillList() {
+        if (options.cmp !== undefined) {
+            data.sort(function(a, b) {
+                return options.cmp(term, a, b);
+            });
+        }
+
         list.empty();
         var max = limitNumberOfItems(data.length);
         for (var i=0; i < max; i++) {
@@ -729,12 +744,16 @@ $.ui.rbautocomplete.select = function (options, input, select, config) {
             return this.visible() && (listItems.filter("." + CLASSES.ACTIVE)[0] || options.selectFirst && listItems[0]);
         },
         show: function() {
-            var offset = $(input).offset();
-            element.css({
-                width: typeof options.width == "string" || options.width > 0 ? options.width : $(input).width(),
-                top: offset.top + input.offsetHeight,
-                left: offset.left
-            }).show();
+            var $input = $(input),
+                $window = $(window),
+                $document = $(document),
+                offset = $input.offset(),
+                inputWidth = input.offsetWidth,
+                inputHeight = input.offsetHeight,
+                windowRight,
+                windowBottom,
+                width,
+                height;
 
             if(options.scroll) {
                 list.scrollTop(0);
@@ -760,6 +779,25 @@ $.ui.rbautocomplete.select = function (options, input, select, config) {
 
             $(input).triggerHandler("autocompleteshow", [{}, { options: options }], options["show"]);
 
+            width = (typeof options.width === "string" || options.width > 0
+                     ? options.width
+                     : inputWidth);
+            height = element.outerHeight(true);
+
+            windowBottom = $window.height() + $document.scrollTop();
+            windowRight = $window.width() + $document.scrollLeft();
+
+            element
+                .css({
+                    width: width,
+                    top: (offset.top + inputHeight + height > windowBottom
+                          ? offset.top - height
+                          : offset.top + inputHeight),
+                    left: (offset.left + width > windowRight
+                           ? offset.left + inputWidth - width
+                           : offset.left)
+                })
+                .show();
         },
         selected: function() {
             var selected = listItems && listItems.filter("." + CLASSES.ACTIVE).removeClass(CLASSES.ACTIVE);

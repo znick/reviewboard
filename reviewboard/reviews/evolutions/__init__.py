@@ -1,3 +1,6 @@
+from __future__ import unicode_literals
+
+
 SEQUENCE = [
     'change_descriptions',
     'last_review_timestamp',
@@ -17,4 +20,11 @@ SEQUENCE = [
     'commit_id',
     'file_attachment_comment_diff_id',
     'rich_text',
+    'base_comment_extra_data',
+    'unique_together_baseline',
+    'extra_data',
+    'review_request_issue_counts',
+    'group_mailing_list_charfield',
+    'review_request_draft_commit_id',
+    'group_email_list_only',
 ]

@@ -75,6 +75,7 @@ RB.ReviewReplyEditor = Backbone.Model.extend({
 
                 if (text) {
                     obj.set(valueAttr, text);
+                    obj.set('richText', true);
                     obj.save({
                         success: function() {
                             this.set('hasDraft', true);
@@ -129,7 +130,7 @@ RB.ReviewReplyEditor = Backbone.Model.extend({
             oldReviewReply.off(null, null, this);
         }
 
-        this.listenTo(reviewReply, 'destroy', function() {
+        this.listenTo(reviewReply, 'destroyed', function() {
             this.trigger('discarded');
             this._resetState();
         });

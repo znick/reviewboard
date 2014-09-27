@@ -1,3 +1,5 @@
+from __future__ import unicode_literals
+
 import os
 import random
 import string
@@ -6,13 +8,14 @@ from optparse import make_option
 
 from django import db
 from django.contrib.auth.models import User
-from django.core.files.uploadedfile import UploadedFile
+from django.core.files import File
 from django.core.management.base import (BaseCommand, CommandError,
                                          NoArgsCommand)
 from django.db import transaction
+from django.utils import six
 
 from reviewboard.accounts.models import Profile
-from reviewboard.diffviewer.forms import UploadDiffForm
+from reviewboard.reviews.forms import UploadDiffForm
 from reviewboard.diffviewer.models import DiffSetHistory
 from reviewboard.reviews.models import ReviewRequest, Review, Comment
 from reviewboard.scmtools.models import Repository, Tool
@@ -109,7 +112,7 @@ class Command(NoArgsCommand):
                     help='The login password for users created')
     )
 
-    @transaction.commit_on_success
+    @transaction.atomic
     def handle_noargs(self, users=None, review_requests=None, diffs=None,
                       reviews=None, diff_comments=None, password=None,
                       verbosity=NORMAL, **options):
@@ -120,7 +123,7 @@ class Command(NoArgsCommand):
         random.seed()
 
         if review_requests:
-            num_of_requests = self.parseCommand("review_requests",
+            num_of_requests = self.parse_command("review_requests",
                                                 review_requests)
 
             # Setup repository.
@@ -137,7 +140,7 @@ class Command(NoArgsCommand):
                 tool=Tool.objects.get(name="Git"))
 
         if diffs:
-            num_of_diffs = self.parseCommand("diffs", diffs)
+            num_of_diffs = self.parse_command("diffs", diffs)
 
             # Create the diff directory locations.
             diff_dir_tmp = os.path.abspath(
@@ -159,10 +162,10 @@ class Command(NoArgsCommand):
                 raise CommandError("No diff files in this directory")
 
         if reviews:
-            num_of_reviews = self.parseCommand("reviews", reviews)
+            num_of_reviews = self.parse_command("reviews", reviews)
 
         if diff_comments:
-            num_of_diff_comments = self.parseCommand("diff-comments",
+            num_of_diff_comments = self.parse_command("diff-comments",
                                                      diff_comments)
 
         # Users is required for any other operation.
@@ -172,7 +175,7 @@ class Command(NoArgsCommand):
         # Start adding data to the database.
         for i in range(1, users + 1):
             new_user = User.objects.create(
-                username=self.randUsername(),  # Avoids having to flush db.
+                username=self.rand_username(),  # Avoids having to flush db.
                 first_name=random.choice(NAMES),
                 last_name=random.choice(NAMES),
                 email="test@example.com",
@@ -193,18 +196,18 @@ class Command(NoArgsCommand):
                 collapsed_diffs=True,
                 wordwrapped_diffs=True,
                 syntax_highlighting=True,
-                show_submitted=True)
+                show_closed=True)
 
             # Review Requests.
-            req_val = self.pickRandomValue(num_of_requests)
+            req_val = self.pick_random_value(num_of_requests)
 
             if int(verbosity) > NORMAL:
-                print "For user %s:%s" % (i, new_user.username)
-                print "============================="
+                self.stdout.write("For user %s:%s" % (i, new_user.username))
+                self.stdout.write("=============================")
 
             for j in range(0, req_val):
                 if int(verbosity) > NORMAL:
-                    print "Request #%s:" % j
+                    self.stdout.write("Request #%s:" % j)
 
                 review_request = ReviewRequest.objects.create(new_user, None)
                 review_request.public = True
@@ -218,35 +221,40 @@ class Command(NoArgsCommand):
                 review_request.save()
 
                 # Add the diffs if any to add.
-                diff_val = self.pickRandomValue(num_of_diffs)
+                diff_val = self.pick_random_value(num_of_diffs)
 
                 # If adding diffs add history.
                 if diff_val > 0:
                     diffset_history = DiffSetHistory.objects.create(
-                        name='testDiffFile' + str(i))
+                        name='testDiffFile' + six.text_type(i))
                     diffset_history.save()
 
                 # Won't execute if diff_val is 0, ie: no diffs requested.
                 for k in range(0, diff_val):
                     if int(verbosity) > NORMAL:
-                        print "%s:\tDiff #%s" % (i, k)
+                        self.stdout.write("%s:\tDiff #%s" % (i, k))
 
                     random_number = random.randint(0, len(files) - 1)
                     file_to_open = diff_dir + files[random_number]
-                    f = UploadedFile(open(file_to_open, 'r'))
-                    form = UploadDiffForm(review_request.repository, f)
-                    cur_diff = form.create(f, None, diffset_history)
+                    f = open(file_to_open, 'r')
+                    form = UploadDiffForm(review_request=review_request,
+                                          files={"path": File(f)})
+
+                    if form.is_valid():
+                        cur_diff = form.create(f, None, diffset_history)
+
                     review_request.diffset_history = diffset_history
                     review_request.save()
                     review_request.publish(new_user)
                     f.close()
 
                     # Add the reviews if any.
-                    review_val = self.pickRandomValue(num_of_reviews)
+                    review_val = self.pick_random_value(num_of_reviews)
 
                     for l in range(0, review_val):
                         if int(verbosity) > NORMAL:
-                            print "%s:%s:\t\tReview #%s:" % (i, j, l)
+                            self.stdout.write("%s:%s:\t\tReview #%s:" %
+                                              (i, j, l))
 
                         reviews = Review.objects.create(
                             review_request=review_request,
@@ -255,12 +263,13 @@ class Command(NoArgsCommand):
                         reviews.publish(new_user)
 
                         # Add comments if any.
-                        comment_val = self.pickRandomValue(
+                        comment_val = self.pick_random_value(
                             num_of_diff_comments)
 
                         for m in range(0, comment_val):
                             if int(verbosity) > NORMAL:
-                                print "%s:%s:\t\t\tComments #%s" % (i, j, m)
+                                self.stdout.write("%s:%s:\t\t\tComments #%s" %
+                                                  (i, j, m))
 
                             if m == 0:
                                 file_diff = cur_diff.files.order_by('id')[0]
@@ -302,29 +311,33 @@ class Command(NoArgsCommand):
 
             # Generate output as users & data is created.
             if req_val != 0:
-                print "user %s created with %s requests" % (
-                    new_user.username, req_val)
+                self.stdout.write("user %s created with %s requests"
+                                  % (new_user.username, req_val))
             else:
-                print "user %s created successfully" % new_user.username
+                self.stdout.write("user %s created successfully"
+                                  % new_user.username)
 
-    def parseCommand(self, com_arg, com_string):
+    def parse_command(self, com_arg, com_string):
         """Parse the values given in the command line."""
         try:
             return tuple((int(item.strip()) for item in com_string.split(':')))
         except ValueError:
-            print >> sys.stderr, "You failed to provide \"" + com_arg \
-                + "\" with one or two values of type int.\n" +\
-                "Example: --" + com_arg + "=2:5"
-            exit()
+            raise CommandError('You failed to provide "%s" with one or two '
+                               'values of type int.\nExample: --%s=2:5'
+                               % (com_arg, com_arg))
 
-    def randUsername(self):
+    def rand_username(self):
         """Used to generate random usernames so no flushing needed."""
-
         return ''.join(random.choice(string.ascii_lowercase)
                        for x in range(0, random.randrange(5, 9)))
 
-    def pickRandomValue(self, value):
-        """This acts like a condition check in the program, value is a tuple."""
+    def pick_random_value(self, value):
+        """Pick a random value out of a range.
+
+        If the 'value' tuple is empty, this returns 0. If 'value' contains a
+        single number, this returns that number. Otherwise, this returns a
+        random number between the two given numbers.
+        """
         if not value:
             return 0
 

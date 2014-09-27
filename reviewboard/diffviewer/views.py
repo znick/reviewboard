@@ -1,3 +1,5 @@
+from __future__ import unicode_literals
+
 import logging
 import traceback
 
@@ -101,7 +103,7 @@ class DiffViewerView(TemplateView):
                               diffset.id, request=request)
 
             return response
-        except Exception, e:
+        except Exception as e:
             return exception_traceback(request, e, self.template_name)
 
     def render_to_response(self, *args, **kwargs):
@@ -151,24 +153,40 @@ class DiffViewerView(TemplateView):
 
         page = paginator.page(page_num)
 
-        return dict({
+        diff_context = {
+            'revision': {
+                'revision': diffset.revision,
+                'is_interdiff': interdiffset is not None,
+                'interdiff_revision': (interdiffset.revision
+                                       if interdiffset else None),
+            },
+            'pagination': {
+                'is_paginated': page.has_other_pages(),
+                'current_page': page.number,
+                'pages': paginator.num_pages,
+                'page_numbers': paginator.page_range,
+                'has_next': page.has_next(),
+                'has_previous': page.has_previous(),
+            },
+        }
+
+        if page.has_next():
+            diff_context['pagination']['next_page'] = page.next_page_number()
+
+        if page.has_previous():
+            diff_context['pagination']['previous_page'] = \
+                page.previous_page_number()
+
+        context = dict({
+            'diff_context': diff_context,
             'diffset': diffset,
             'interdiffset': interdiffset,
             'diffset_pair': (diffset, interdiffset),
             'files': page.object_list,
             'collapseall': self.collapse_diffs,
-
-            # Add the pagination context
-            'is_paginated': page.has_other_pages(),
-            'page': page.number,
-            'pages': paginator.num_pages,
-            'page_numbers': paginator.page_range,
-            'has_next': page.has_next(),
-            'next_page': page.next_page_number(),
-            'has_previous': page.has_previous(),
-            'previous_page': page.previous_page_number(),
-            'page_start_index': page.start_index(),
         }, **extra_context)
+
+        return context
 
 
 class DiffFragmentView(View):
@@ -218,7 +236,9 @@ class DiffFragmentView(View):
             renderer = self.create_renderer(context, *args, **kwargs)
 
             return renderer.render_to_response()
-        except Exception, e:
+        except Http404:
+            raise
+        except Exception as e:
             return exception_traceback(
                 self.request, e, self.error_template_name,
                 extra_context={
@@ -297,10 +317,10 @@ class DiffFragmentView(View):
             collapseall = True
         elif chunkindex is not None:
             # If we're currently expanding part of a chunk, we want to render
-            # the entire chunk without any lines collapsed. In the case of showing
-            # a range of lines, we're going to get all chunks and then only show
-            # the range. This is so that we won't have separate cached entries for
-            # each range.
+            # the entire chunk without any lines collapsed. In the case of
+            # showing a range of lines, we're going to get all chunks and then
+            # only show the range. This is so that we won't have separate
+            # cached entries for each range.
             collapseall = False
         else:
             collapseall = get_collapse_diff(self.request)
@@ -353,7 +373,10 @@ class DiffFragmentView(View):
             file = files[0]
 
             if 'index' in self.request.GET:
-                file['index'] = self.request.GET.get('index')
+                try:
+                    file['index'] = int(self.request.GET.get('index'))
+                except ValueError:
+                    pass
 
             return file
 

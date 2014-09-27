@@ -1,5 +1,5 @@
-describe('resources/models/FileAttachmentComment', function() {
-    var strings = RB.FileAttachmentComment.strings,
+suite('rb/resources/models/FileAttachmentComment', function() {
+    var baseStrings = RB.BaseResource.strings,
         model;
 
     beforeEach(function() {
@@ -7,7 +7,7 @@ describe('resources/models/FileAttachmentComment', function() {
         model = new RB.FileAttachmentComment({
             fileAttachmentID: 16,
             parentObject: new RB.BaseResource({
-                public: true
+                'public': true
             })
         });
     });
@@ -20,6 +20,7 @@ describe('resources/models/FileAttachmentComment', function() {
                     id: 42,
                     issue_opened: true,
                     issue_status: 'resolved',
+                    text_type: 'markdown',
                     text: 'foo',
                     extra_data: {
                         my_int: 123,
@@ -41,6 +42,7 @@ describe('resources/models/FileAttachmentComment', function() {
             expect(data.id).toBe(42);
             expect(data.issueOpened).toBe(true);
             expect(data.issueStatus).toBe(RB.BaseComment.STATE_RESOLVED);
+            expect(data.richText).toBe(true);
             expect(data.text).toBe('foo');
             expect(data.extraData).not.toBe(undefined);
             expect(data.extraData.my_int).toBe(123);
@@ -115,7 +117,7 @@ describe('resources/models/FileAttachmentComment', function() {
             });
 
             describe('Invalid values', function() {
-                var errStr = strings.INVALID_EXTRADATA_TYPE;
+                var errStr = baseStrings.INVALID_EXTRADATA_TYPE;
 
                 it('Array', function() {
                     expect(model.validate({
@@ -185,7 +187,7 @@ describe('resources/models/FileAttachmentComment', function() {
             });
 
             describe('Invalid values', function() {
-                var errStr = strings.INVALID_EXTRADATA_VALUE_TYPE
+                var errStr = baseStrings.INVALID_EXTRADATA_VALUE_TYPE
                     .replace('{key}', 'value');
 
                 it('Arrays', function() {

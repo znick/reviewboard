@@ -21,10 +21,13 @@ RB.ReviewRequest = RB.BaseResource.extend({
         dependsOn: [],
         description: null,
         draftReview: null,
+        lastUpdated: null,
         localSitePrefix: null,
-        public: null,
+        'public': null,
         repository: null,
         reviewURL: null,
+        richText: false,
+        state: null,
         summary: null,
         targetGroups: [],
         targetPeople: [],
@@ -32,6 +35,10 @@ RB.ReviewRequest = RB.BaseResource.extend({
     }),
 
     rspNamespace: 'review_request',
+
+    extraQueryArgs: {
+        'force-text-type': 'markdown'
+    },
 
     initialize: function() {
         RB.BaseResource.prototype.initialize.apply(this, arguments);
@@ -47,6 +54,7 @@ RB.ReviewRequest = RB.BaseResource.extend({
             changeDescription: this.get('changeDescription'),
             dependsOn: this.get('dependsOn'),
             description: this.get('description'),
+            richText: this.get('richText'),
             summary: this.get('summary'),
             targetGroups: this.get('targetGroups'),
             targetPeople: this.get('targetPeople'),
@@ -63,6 +71,24 @@ RB.ReviewRequest = RB.BaseResource.extend({
         }
 
         return url;
+    },
+
+    /*
+     * Creates the review request from an existing commit.
+     *
+     * This can only be used for new ReviewRequest instances, and requires
+     * a commitID option.
+     */
+    createFromCommit: function(options, context) {
+        console.assert(options.commitID);
+        console.assert(this.isNew());
+
+        this.set('commitID', options.commitID);
+        this.save(
+            _.extend({
+                createFromCommit: true
+            }, options),
+            context);
     },
 
     /*
@@ -154,7 +180,9 @@ RB.ReviewRequest = RB.BaseResource.extend({
      * An optional description can be set by passing a 'description' option.
      */
     close: function(options, context) {
-        var data = {};
+        var data = {},
+            changingState,
+            saveOptions;
 
         console.assert(options);
 
@@ -176,25 +204,50 @@ RB.ReviewRequest = RB.BaseResource.extend({
             data.description = options.description;
         }
 
-        options = _.defaults({
-            data: data
+        changingState = (options.type !== this.get('state'));
+
+        saveOptions = _.defaults({
+            data: data,
+
+            success: _.bind(function() {
+                if (changingState) {
+                    this.trigger('closed');
+                }
+
+                this.markUpdated(this.get('lastUpdated'));
+
+                if (_.isFunction(options.success)) {
+                    options.success.call(context);
+                }
+            }, this)
         }, options);
 
-        delete options.type;
-        delete options.description;
+        delete saveOptions.type;
+        delete saveOptions.description;
 
-        this.save(options, context);
+        this.save(saveOptions, context);
     },
 
     /*
      * Reopens the review request.
      */
     reopen: function(options, context) {
+        options = options || {};
+
         this.save(
             _.defaults({
                 data: {
                     status: 'pending'
-                }
+                },
+
+                success: _.bind(function() {
+                    this.trigger('reopened');
+                    this.markUpdated(this.get('lastUpdated'));
+
+                    if (_.isFunction(options.success)) {
+                        options.success.call(context);
+                    }
+                }, this)
             }, options),
             context);
     },
@@ -263,21 +316,29 @@ RB.ReviewRequest = RB.BaseResource.extend({
     /*
      * Serialize for sending to the server.
      */
-    toJSON: function() {
+    toJSON: function(options) {
         var commitID = this.get('commitID'),
             repository = this.get('repository'),
             result = {};
 
+        options = options || {};
+
         if (this.isNew()) {
             if (commitID) {
                 result.commit_id = commitID;
+
+                if (options.createFromCommit) {
+                    result.create_from_commit_id = true;
+                }
             }
+
             if (repository) {
                 result.repository = repository;
             }
+
             return result;
         } else {
-            return _.super(this).toJSON.apply(this, arguments);
+            return _super(this).toJSON.apply(this, arguments);
         }
     },
 
@@ -285,14 +346,23 @@ RB.ReviewRequest = RB.BaseResource.extend({
      * Deserialize the response from the server.
      */
     parseResourceData: function(rsp) {
+        var state = {
+            pending: RB.ReviewRequest.PENDING,
+            discarded: RB.ReviewRequest.CLOSE_DISCARDED,
+            submitted: RB.ReviewRequest.CLOSE_SUBMITTED
+        }[rsp.status];
+
         return {
             branch: rsp.branch,
             bugsClosed: rsp.bugs_closed,
             dependsOn: rsp.depends_on,
             description: rsp.description,
-            public: rsp.public,
+            lastUpdated: rsp.last_updated,
+            'public': rsp['public'],
             reviewURL: rsp.url,
+            richText: rsp.text_type === 'markdown',
             summary: rsp.summary,
+            state: state,
             targetGroups: rsp.target_groups,
             targetPeople: rsp.target_people,
             testingDone: rsp.testing_done
@@ -302,5 +372,6 @@ RB.ReviewRequest = RB.BaseResource.extend({
     CHECK_UPDATES_MSECS: 5 * 60 * 1000, // Every 5 minutes
 
     CLOSE_DISCARDED: 1,
-    CLOSE_SUBMITTED: 2
+    CLOSE_SUBMITTED: 2,
+    PENDING: 3
 });

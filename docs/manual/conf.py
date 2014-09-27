@@ -28,10 +28,9 @@ sys.path.insert(0, os.path.dirname(__file__))
 # be looked up first, so allow us to append instead.
 sys.path = os.getenv('PYTHONPATH_PREPEND', '').split(':') + sys.path
 
+os.environ.setdefault('DJANGO_SETTINGS_MODULE', 'reviewboard.settings')
+
 import reviewboard
-from reviewboard import settings
-from django.core.management import setup_environ
-setup_environ(settings)
 
 
 # If your extensions are in another directory, add it here. If the directory
@@ -52,13 +51,14 @@ extensions = [
     'sphinx.ext.todo',
     'webapidocs',
     'httprole',
+    'retina_images',
 ]
 
 # Add any paths that contain templates here, relative to this directory.
 templates_path = ['_templates']
 
 # The suffix of source filenames.
-source_suffix = '.txt'
+source_suffix = '.rst'
 
 # The encoding of source files.
 #source_encoding = 'utf-8'
@@ -223,7 +223,8 @@ latex_show_urls = True
 latex_show_pagerefs = True
 
 
-# Example configuration for intersphinx: refer to the Python standard library.
-intersphinx_mapping = {'http://docs.python.org/dev': None}
+intersphinx_mapping = {
+    'rbtools': ('http://reviewboard.org/docs/rbtools/dev', None),
+}
 
 todo_include_todos = True

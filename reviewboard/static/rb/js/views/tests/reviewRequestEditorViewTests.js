@@ -1,22 +1,10 @@
-describe('views/ReviewRequestEditorView', function() {
+suite('rb/views/ReviewRequestEditorView', function() {
     var reviewRequest,
         editor,
         view,
         template = _.template([
             '<div>',
-            ' <div id="draft-banner" style="display: none;">',
-            '  <input type="button" id="btn-draft-publish" />',
-            '  <input type="button" id="btn-draft-discard" />',
-            '  <input type="button" id="btn-review-request-discard" />',
-            '  <input type="button" id="btn-review-request-reopen" />',
-            '  <span id="changedescription" class="editable"></span>',
-            ' </div>',
-            ' <div id="discard-banner" style="display: none;">',
-            '  <span id="changedescription" class="editable"></span>',
-            ' </div>',
-            ' <div id="submitted-banner" style="display: none;">',
-            '  <span id="changedescription" class="editable"></span>',
-            ' </div>',
+            ' <div id="review_request_banners"></div>',
             ' <div id="review-request-warning"></div>',
             ' <div class="actions">',
             '  <a href="#" id="discard-review-request-link"></a>',
@@ -24,19 +12,48 @@ describe('views/ReviewRequestEditorView', function() {
             '  <a href="#" id="delete-review-request-link"></a>',
             ' </div>',
             ' <div class="review-request">',
-            '  <span id="summary" class="editable"></span>',
-            '  <span id="branch" class="editable"></span>',
-            '  <span id="bugs_closed" class="editable"></span>',
-            '  <span id="target_groups" class="editable"></span>',
-            '  <span id="target_people" class="editable"></span>',
-            '  <span id="description" class="editable"></span>',
-            '  <span id="testing_done" class="editable"></span>',
+            '  <div id="review_request_main">',
+            '   <span id="field_summary"',
+            '         data-field-id="summary"',
+            '         class="field editable"></span>',
+            '   <span id="field_branch"',
+            '         data-field-id="branch"',
+            '         class="field editable"></span>',
+            '   <span id="field_bugs_closed"',
+            '         data-field-id="bugs_closed"',
+            '         class="field editable comma-editable"></span>',
+            '   <span id="field_target_groups"',
+            '         data-field-id="target_groups"',
+            '         class="field editable comma-editable"></span>',
+            '   <span id="field_target_people"',
+            '         data-field-id="target_people"',
+            '         class="field editable"></span>',
+            '   <div class="content">',
+            '    <pre id="field_description"',
+            '         data-field-id="description"',
+            '         data-rich-text="true"',
+            '         class="field field-text-area editable"></pre>',
+            '   </div>',
+            '   <div class="content">',
+            '    <pre id="field_testing_done"',
+            '         data-field-id="testing_done"',
+            '         data-rich-text="true"',
+            '         class="field field-text-area editable"></pre>',
+            '   </div>',
+            '   <div class="content">',
+            '    <pre id="field_my_custom"',
+            '         data-field-id="my_custom"',
+            '         class="field editable"></pre>',
+            '   </div>',
+            '  </div>',
             ' </div>',
-            ' <div>',
-            '  <div id="file-list"><br /></div>',
-            ' </div>',
-            ' <div>',
-            '  <div id="screenshot-thumbnails"><br /></div>',
+            ' <div id="review_request_extra">',
+            '  <div>',
+            '   <div id="file-list"><br /></div>',
+            '  </div>',
+            '  <div>',
+            '   <div id="screenshot-thumbnails"><br /></div>',
+            '  </div>',
             ' </div>',
             '</div>'
         ].join('')),
@@ -56,11 +73,14 @@ describe('views/ReviewRequestEditorView', function() {
         var $el = $(template()).appendTo($testsScratch);
 
         reviewRequest = new RB.ReviewRequest({
-            id: 123
+            id: 123,
+            'public': true,
+            state: RB.ReviewRequest.PENDING
         });
 
         editor = new RB.ReviewRequestEditor({
-            editable: true,
+            mutableByUser: true,
+            statusMutableByUser: true,
             reviewRequest: reviewRequest,
             commentIssueManager: new RB.CommentIssueManager()
         });
@@ -123,6 +143,8 @@ describe('views/ReviewRequestEditorView', function() {
                     expect(options.type).toBe(RB.ReviewRequest.CLOSE_DISCARDED);
                 });
 
+                spyOn(window, 'confirm').andReturn(true);
+
                 $('#discard-review-request-link').click();
 
                 expect(reviewRequest.close).toHaveBeenCalled();
@@ -148,42 +170,53 @@ describe('views/ReviewRequestEditorView', function() {
         describe('Draft banner', function() {
             describe('Visibility', function() {
                 it('Hidden when saving', function() {
-                    expect(view.$draftBanner.is(':visible')).toBe(false);
+                    expect(view.banner).toBe(null);
                     editor.trigger('saving');
-                    expect(view.$draftBanner.is(':visible')).toBe(false);
+                    expect(view.banner).toBe(null);
                 });
 
                 it('Show when saved', function() {
-                    expect(view.$draftBanner.is(':visible')).toBe(false);
+                    expect(view.banner).toBe(null);
                     editor.trigger('saved');
-                    expect(view.$draftBanner.is(':visible')).toBe(true);
+                    expect(view.banner).not.toBe(null);
+                    expect(view.banner.$el.is(':visible')).toBe(true);
                 });
             });
 
             describe('Buttons actions', function() {
                 it('Discard Draft', function() {
+                    view.showBanner();
+
                     spyOn(reviewRequest.draft, 'destroy');
 
-                    view.$draftBanner.find('#btn-draft-discard').click();
+                    $('#btn-draft-discard').click();
 
                     expect(reviewRequest.draft.destroy).toHaveBeenCalled();
                 });
 
                 it('Discard Review Request', function() {
+                    reviewRequest.set('public', false);
+                    view.showBanner();
+
                     spyOn(reviewRequest, 'close')
                         .andCallFake(function(options) {
                             expect(options.type).toBe(
                                 RB.ReviewRequest.CLOSE_DISCARDED);
                         });
 
-                    view.$draftBanner.find('#btn-review-request-discard')
-                        .click();
+                    $('#btn-review-request-discard').click();
 
                     expect(reviewRequest.close).toHaveBeenCalled();
                 });
 
                 it('Publish', function() {
+                    view.showBanner();
+
                     spyOn(editor, 'publishDraft').andCallThrough();
+                    spyOn(reviewRequest.draft, 'ensureCreated')
+                        .andCallFake(function(options, context) {
+                            options.success.call(context);
+                        });
                     spyOn(reviewRequest.draft, 'publish');
 
                     /* Set up some basic state so that we pass validation. */
@@ -196,63 +229,123 @@ describe('views/ReviewRequestEditorView', function() {
                         description: 'foo'
                     });
 
-                    view.$draftBanner.find('#btn-draft-publish').click();
+                    $('#btn-draft-publish').click();
 
                     expect(editor.get('publishing')).toBe(true);
                     expect(editor.get('pendingSaveCount')).toBe(0);
                     expect(editor.publishDraft).toHaveBeenCalled();
                     expect(reviewRequest.draft.publish).toHaveBeenCalled();
                 });
+            });
+
+            describe('Button states', function() {
+                var $buttons;
+
+                beforeEach(function() {
+                    view.showBanner();
+
+                    $buttons = view.banner.$buttons;
+                });
+
+                it('Enabled by default', function() {
+                    expect($buttons.prop('disabled')).toBe(false);
+                });
+
+                it('Disabled when saving', function() {
+                    expect($buttons.prop('disabled')).toBe(false);
+                    editor.trigger('saving');
+                    expect($buttons.prop('disabled')).toBe(true);
+                });
+
+                it('Enabled when saved', function() {
+                    expect($buttons.prop('disabled')).toBe(false);
+                    editor.trigger('saving');
+                    expect($buttons.prop('disabled')).toBe(true);
+                    editor.trigger('saved');
+                    expect($buttons.prop('disabled')).toBe(false);
+                });
+            });
+        });
+
+        describe('Discarded banner', function() {
+            beforeEach(function() {
+                reviewRequest.set('state', RB.ReviewRequest.CLOSE_DISCARDED);
+            });
+
+            it('Visibility', function() {
+                expect(view.banner).toBe(null);
+
+                view.showBanner();
+
+                expect(view.banner).not.toBe(null);
+                expect(view.banner.el.id).toBe('discard-banner');
+                expect(view.banner.$el.is(':visible')).toBe(true);
+            });
+
+            describe('Buttons actions', function() {
+                beforeEach(function() {
+                    expect(view.banner).toBe(null);
+                    view.showBanner();
+                });
 
                 it('Reopen', function() {
                     spyOn(reviewRequest, 'reopen');
 
-                    view.$draftBanner.find('#btn-review-request-reopen')
-                        .click();
+                    $('#btn-review-request-reopen').click();
 
                     expect(reviewRequest.reopen).toHaveBeenCalled();
                 });
             });
+        });
 
-            describe('Button states', function() {
-                it('Enabled by default', function() {
-                    expect(view.$draftBannerButtons.prop('disabled'))
-                        .toBe(false);
+        describe('Submitted banner', function() {
+            beforeEach(function() {
+                reviewRequest.set('state', RB.ReviewRequest.CLOSE_SUBMITTED);
+            });
+
+            it('Visibility', function() {
+                expect(view.banner).toBe(null);
+
+                view.showBanner();
+
+                expect(view.banner).not.toBe(null);
+                expect(view.banner.el.id).toBe('submitted-banner');
+                expect(view.banner.$el.is(':visible')).toBe(true);
+            });
+
+            describe('Buttons actions', function() {
+                beforeEach(function() {
+                    expect(view.banner).toBe(null);
+                    reviewRequest.set('state', RB.ReviewRequest.CLOSE_SUBMITTED);
+                    view.showBanner();
                 });
 
-                it('Disabled when saving', function() {
-                    expect(view.$draftBannerButtons.prop('disabled'))
-                        .toBe(false);
-                    editor.trigger('saving');
-                    expect(view.$draftBannerButtons.prop('disabled'))
-                        .toBe(true);
-                });
+                it('Reopen', function() {
+                    spyOn(reviewRequest, 'reopen');
 
-                it('Enabled when saved', function() {
-                    expect(view.$draftBannerButtons.prop('disabled'))
-                        .toBe(false);
-                    editor.trigger('saving');
-                    expect(view.$draftBannerButtons.prop('disabled'))
-                        .toBe(true);
-                    editor.trigger('saved');
-                    expect(view.$draftBannerButtons.prop('disabled'))
-                        .toBe(false);
+                    $('#btn-review-request-reopen').click();
+
+                    expect(reviewRequest.reopen).toHaveBeenCalled();
                 });
             });
         });
     });
 
     describe('Fields', function() {
-        var jsonFieldName,
+        var saveSpyFunc,
+            jsonFieldName,
             $field,
             $input;
 
         beforeEach(function() {
-            spyOn(reviewRequest.draft, 'save')
-                .andCallFake(function(options, context) {
+            if (!saveSpyFunc) {
+                saveSpyFunc = function(options, context) {
                     expect(options.data[jsonFieldName]).toBe('My Value');
                     options.success.call(context);
-                });
+                };
+            }
+
+            spyOn(reviewRequest.draft, 'save').andCallFake(saveSpyFunc);
 
             view.render();
         });
@@ -280,9 +373,17 @@ describe('views/ReviewRequestEditorView', function() {
         function savingTest() {
             it('Saves', function() {
                 $field.inlineEditor('startEdit');
-                $input
-                    .val('My Value')
-                    .triggerHandler('keyup');
+
+                if ($field.data('rich-text')) {
+                    $input.data('markdown-editor').setText('My Value');
+                } else {
+                    $input.val('My Value');
+                }
+
+                $input.triggerHandler('keyup');
+
+                expect($field.inlineEditor('value')).toBe('My Value');
+                expect($field.inlineEditor('dirty')).toBe(true);
                 $field.inlineEditor('submit');
 
                 expect(reviewRequest.draft.save).toHaveBeenCalled();
@@ -318,7 +419,7 @@ describe('views/ReviewRequestEditorView', function() {
         describe('Branch', function() {
             setupFieldTests({
                 jsonFieldName: 'branch',
-                selector: '#branch'
+                selector: '#field_branch'
             });
 
             hasEditorTest();
@@ -329,7 +430,7 @@ describe('views/ReviewRequestEditorView', function() {
         describe('Bugs Closed', function() {
             setupFieldTests({
                 jsonFieldName: 'bugs_closed',
-                selector: '#bugs_closed'
+                selector: '#field_bugs_closed'
             });
 
             hasEditorTest();
@@ -340,17 +441,17 @@ describe('views/ReviewRequestEditorView', function() {
                     reviewRequest.set('bugTrackerURL', 'http://issues/?id=%s');
                     reviewRequest.draft.set('bugsClosed', [1, 2, 3]);
 
-                    expect(view.$('#bugs_closed').html()).toBe(
-                        '<a href="http://issues/?id=1">1</a>, ' +
-                        '<a href="http://issues/?id=2">2</a>, ' +
-                        '<a href="http://issues/?id=3">3</a>');
+                    expect($field.html()).toBe(
+                        '<a class="bug" href="http://issues/?id=%s">1</a>, ' +
+                        '<a class="bug" href="http://issues/?id=%s">2</a>, ' +
+                        '<a class="bug" href="http://issues/?id=%s">3</a>');
                 });
 
                 it('Without bugTrackerURL', function() {
                     reviewRequest.set('bugTrackerURL', '');
                     reviewRequest.draft.set('bugsClosed', [1, 2, 3]);
 
-                    expect(view.$('#bugs_closed').html()).toBe('1, 2, 3');
+                    expect($field.html()).toBe('1, 2, 3');
                 });
             });
 
@@ -359,13 +460,9 @@ describe('views/ReviewRequestEditorView', function() {
 
         describe('Change Descriptions', function() {
             function closeDescriptionTests(bannerSel, closeType) {
-                setupFieldTests({
-                    jsonFieldName: 'changedescription',
-                    selector: bannerSel + ' #changedescription'
-                });
-
                 beforeEach(function() {
-                    $(bannerSel).show();
+                    reviewRequest.set('state', closeType);
+                    view.showBanner();
 
                     spyOn(reviewRequest, 'close')
                         .andCallFake(function(options) {
@@ -373,6 +470,11 @@ describe('views/ReviewRequestEditorView', function() {
                             expect(options.description).toBe(
                                 'My Value');
                         });
+                });
+
+                setupFieldTests({
+                    jsonFieldName: 'changedescription',
+                    selector: bannerSel + ' #field_changedescription'
                 });
 
                 hasEditorTest();
@@ -383,12 +485,42 @@ describe('views/ReviewRequestEditorView', function() {
 
                 it('Saves', function() {
                     $field.inlineEditor('startEdit');
-                    $input
-                        .val('My Value')
-                        .triggerHandler('keyup');
+                    $input.data('markdown-editor').setText('My Value');
+                    $input.triggerHandler('keyup');
                     $field.inlineEditor('submit');
 
                     expect(reviewRequest.close).toHaveBeenCalled();
+                });
+
+                describe('State when statusEditable', function() {
+                    it('Disabled when false', function() {
+                        editor.set('statusEditable', false);
+                        expect($field.inlineEditor('option', 'enabled')).toBe(false);
+                    });
+
+                    it('Enabled when true', function() {
+                        editor.set('statusEditable', true);
+                        expect($field.inlineEditor('option', 'enabled')).toBe(true);
+                    });
+                });
+
+                describe('Formatting', function() {
+                    it('Links', function() {
+                        reviewRequest.draft.set('changeDescription',
+                                                'Testing /r/123');
+
+                        expect($field.text()).toBe('Testing /r/123');
+                        expect($field.find('a').attr('href')).toBe('/r/123/');
+                    });
+
+                    it('Markdown', function() {
+                        reviewRequest.draft.set('changeDescription',
+                                                '`This` is a **test**');
+
+                        expect($field.html()).toBe(
+                            '<p><code>This</code> is a ' +
+                            '<strong>test</strong></p>');
+                    });
                 });
 
                 editCountTests();
@@ -400,13 +532,13 @@ describe('views/ReviewRequestEditorView', function() {
             });
 
             describe('Draft review requests', function() {
-                setupFieldTests({
-                    jsonFieldName: 'changedescription',
-                    selector: '#draft-banner #changedescription'
+                beforeEach(function() {
+                    view.showBanner();
                 });
 
-                beforeEach(function() {
-                    $('#draft-banner').show();
+                setupFieldTests({
+                    jsonFieldName: 'changedescription',
+                    selector: '#draft-banner #field_changedescription'
                 });
 
                 hasEditorTest();
@@ -424,17 +556,27 @@ describe('views/ReviewRequestEditorView', function() {
         describe('Description', function() {
             setupFieldTests({
                 jsonFieldName: 'description',
-                selector: '#description'
+                selector: '#field_description'
             });
 
             hasEditorTest();
             savingTest();
 
-            it('Formatting', function() {
-                reviewRequest.draft.set('description', 'Testing /r/123');
+            describe('Formatting', function() {
+                it('Links', function() {
+                    reviewRequest.draft.set('description', 'Testing /r/123');
 
-                expect(view.$('#description').html()).toBe(
-                    'Testing <a target="_blank" href="/r/123/">/r/123</a>');
+                    expect($field.text()).toBe('Testing /r/123');
+                    expect($field.find('a').attr('href')).toBe('/r/123/');
+                });
+
+                it('Markdown', function() {
+                    reviewRequest.draft.set('description',
+                                            '`This` is a **test**');
+
+                    expect($field.html()).toBe(
+                        '<p><code>This</code> is a <strong>test</strong></p>');
+                });
             });
 
             editCountTests();
@@ -443,7 +585,7 @@ describe('views/ReviewRequestEditorView', function() {
         describe('Summary', function() {
             setupFieldTests({
                 jsonFieldName: 'summary',
-                selector: '#summary'
+                selector: '#field_summary'
             });
 
             hasEditorTest();
@@ -454,17 +596,27 @@ describe('views/ReviewRequestEditorView', function() {
         describe('Testing Done', function() {
             setupFieldTests({
                 jsonFieldName: 'testing_done',
-                selector: '#testing_done'
+                selector: '#field_testing_done'
             });
 
             hasEditorTest();
             savingTest();
 
-            it('Formatting', function() {
-                reviewRequest.draft.set('testingDone', 'Testing /r/123');
+            describe('Formatting', function() {
+                it('Links', function() {
+                    reviewRequest.draft.set('testingDone', 'Testing /r/123');
 
-                expect(view.$('#testing_done').html()).toBe(
-                    'Testing <a target="_blank" href="/r/123/">/r/123</a>');
+                    expect($field.text()).toBe('Testing /r/123');
+                    expect($field.find('a').attr('href')).toBe('/r/123/');
+                });
+
+                it('Markdown', function() {
+                    reviewRequest.draft.set('testingDone',
+                                            '`This` is a **test**');
+
+                    expect($field.html()).toBe(
+                        '<p><code>This</code> is a <strong>test</strong></p>');
+                });
             });
 
             editCountTests();
@@ -474,7 +626,7 @@ describe('views/ReviewRequestEditorView', function() {
             describe('Groups', function() {
                 setupFieldTests({
                     jsonFieldName: 'target_groups',
-                    selector: '#target_groups'
+                    selector: '#field_target_groups'
                 });
 
                 hasAutoCompleteTest();
@@ -493,7 +645,7 @@ describe('views/ReviewRequestEditorView', function() {
                         }
                     ]);
 
-                    expect(view.$('#target_groups').html()).toBe(
+                    expect($field.html()).toBe(
                         '<a href="/groups/group1/">group1</a>, ' +
                         '<a href="/groups/group2/">group2</a>');
                 });
@@ -504,7 +656,7 @@ describe('views/ReviewRequestEditorView', function() {
             describe('People', function() {
                 setupFieldTests({
                     jsonFieldName: 'target_people',
-                    selector: '#target_people'
+                    selector: '#field_target_people'
                 });
 
                 hasAutoCompleteTest();
@@ -523,13 +675,34 @@ describe('views/ReviewRequestEditorView', function() {
                         }
                     ]);
 
-                    expect(view.$('#target_people').html()).toBe(
-                        '<a href="/users/user1/" class="user">user1</a>, ' +
-                        '<a href="/users/user2/" class="user">user2</a>');
+                    expect($field.text()).toBe('user1, user2');
+                    expect($($field.children()[0]).attr('href')).toBe('/users/user1/');
+                    expect($($field.children()[1]).attr('href')).toBe('/users/user2/');
                 });
 
                 editCountTests();
             });
+        });
+
+        describe('Custom fields', function() {
+            beforeEach(function() {
+                saveSpyFunc = function(options, context) {
+                    expect(options.data['extra_data.' + jsonFieldName])
+                        .toBe('My Value');
+                    options.success.call(context);
+                };
+            });
+
+            setupFieldTests({
+                fieldID: 'my_custom',
+                jsonFieldName: 'my_custom',
+                selector: '#field_my_custom',
+                useExtraData: true
+            });
+
+            hasEditorTest();
+            savingTest();
+            editCountTests();
         });
     });
 

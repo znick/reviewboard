@@ -1,11 +1,21 @@
-from django.db.models.signals import post_save, post_delete
+from __future__ import unicode_literals
 
-from reviewboard.admin.signals import _delete_widget_cache
-from reviewboard.reviews.models import Group
-from reviewboard.scmtools.models import Repository
+from django.dispatch import receiver
+
+from reviewboard.signals import initializing
 
 
-post_save.connect(_delete_widget_cache, sender=Group)
-post_save.connect(_delete_widget_cache, sender=Repository)
-post_delete.connect(_delete_widget_cache, sender=Group)
-post_delete.connect(_delete_widget_cache, sender=Repository)
+@receiver(initializing)
+def _on_initializing(*args, **kwargs):
+    """Handler for when Review Board is initializing.
+
+    This will begin listening for save/delete events on Group and
+    Repository, invalidating the widget caches when changed.
+
+    We do this during the initializing process instead of when the module
+    is loaded in order to avoid any circular imports caused by
+    reviewboard.reviews.models.
+    """
+    from reviewboard.admin.widgets import init_widgets
+
+    init_widgets()

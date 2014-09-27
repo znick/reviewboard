@@ -1,21 +1,28 @@
-import fnmatch
-import re
-from difflib import SequenceMatcher
+from __future__ import unicode_literals
 
+import fnmatch
+import functools
+import re
+
+from django.utils import six
 from django.utils.html import escape
 from django.utils.safestring import mark_safe
-from django.utils.translation import ugettext as _, get_language
+from django.utils.six.moves import range
+from django.utils.translation import get_language
 from djblets.log import log_timed
+from djblets.cache.backend import cache_memoize
 from djblets.siteconfig.models import SiteConfiguration
-from djblets.util.misc import cache_memoize
 from pygments import highlight
 from pygments.lexers import get_lexer_for_filename
 from pygments.formatters import HtmlFormatter
 
 from reviewboard.diffviewer.differ import get_differ
-from reviewboard.diffviewer.diffutils import (get_original_file,
-                                              get_patched_file)
-from reviewboard.diffviewer.opcode_generator import get_diff_opcode_generator
+from reviewboard.diffviewer.diffutils import (get_line_changed_regions,
+                                              get_original_file,
+                                              get_patched_file,
+                                              convert_to_unicode)
+from reviewboard.diffviewer.opcode_generator import (DiffOpcodeGenerator,
+                                                     get_diff_opcode_generator)
 
 
 class NoWrapperHtmlFormatter(HtmlFormatter):
@@ -80,6 +87,9 @@ class DiffChunkGenerator(object):
     STYLED_MAX_LINE_LEN = 1000
     STYLED_MAX_LIMIT_BYTES = 200000  # 200KB
 
+    # Default tab size used in browsers.
+    TAB_SIZE = DiffOpcodeGenerator.TAB_SIZE
+
     def __init__(self, request, filediff, interfilediff=None,
                  force_interdiff=False, enable_syntax_highlighting=True):
         assert filediff
@@ -97,7 +107,6 @@ class DiffChunkGenerator(object):
         # Chunk processing state.
         self._last_header = [None, None]
         self._last_header_index = [0, 0]
-        self._cur_meta = {}
         self._chunk_index = 0
 
     def make_cache_key(self):
@@ -108,7 +117,7 @@ class DiffChunkGenerator(object):
             key += 'hl-'
 
         if not self.force_interdiff:
-            key += str(self.filediff.pk)
+            key += six.text_type(self.filediff.pk)
         elif self.interfilediff:
             key += 'interdiff-%s-%s' % (self.filediff.pk,
                                         self.interfilediff.pk)
@@ -122,16 +131,21 @@ class DiffChunkGenerator(object):
     def get_chunks(self):
         """Returns the chunks for the given diff information.
 
-        If the file is binary or deleted, or if the file has moved with no
-        additional changes, then an empty list of chunks will be returned.
+        If the file is binary or is an added or deleted 0-length file, or if
+        the file has moved with no additional changes, then an empty list of
+        chunks will be returned.
 
         If there are chunks already computed in the cache, they will be
         returned. Otherwise, new chunks will be generated, stored in cache,
         and returned.
         """
+        counts = self.filediff.get_line_counts()
+
         if (self.filediff.binary or
-                self.filediff.deleted or
-                self.filediff.source_revision == ''):
+            self.filediff.source_revision == '' or
+            ((self.filediff.is_new or self.filediff.deleted) and
+             counts['insert_count'] == 0 and
+             counts['delete_count'] == 0)):
             return []
 
         return cache_memoize(self.make_cache_key(),
@@ -140,22 +154,24 @@ class DiffChunkGenerator(object):
 
     def _get_chunks_uncached(self):
         """Returns the list of chunks, bypassing the cache."""
-        old = get_original_file(self.filediff, self.request)
+        encoding_list = self.diffset.repository.get_encoding_list()
+
+        old = get_original_file(self.filediff, self.request, encoding_list)
         new = get_patched_file(old, self.filediff, self.request)
 
         if self.interfilediff:
             old = new
             interdiff_orig = get_original_file(self.interfilediff,
-                                               self.request)
+                                               self.request,
+                                               encoding_list)
             new = get_patched_file(interdiff_orig, self.interfilediff,
                                    self.request)
         elif self.force_interdiff:
             # Basically, revert the change.
             old, new = new, old
 
-        encoding = self.diffset.repository.encoding or 'iso-8859-15'
-        old = self._convert_to_utf8(old, encoding)
-        new = self._convert_to_utf8(new, encoding)
+        old = convert_to_unicode(old, encoding_list)[1]
+        new = convert_to_unicode(new, encoding_list)[1]
 
         # Normalize the input so that if there isn't a trailing newline, we add
         # it.
@@ -232,17 +248,24 @@ class DiffChunkGenerator(object):
                                                       self.filediff,
                                                       self.interfilediff)
 
+        counts = {
+            'equal': 0,
+            'replace': 0,
+            'insert': 0,
+            'delete': 0,
+        }
+
         for tag, i1, i2, j1, j2, meta in opcodes_generator:
             old_lines = markup_a[i1:i2]
             new_lines = markup_b[j1:j2]
             num_lines = max(len(old_lines), len(new_lines))
 
-            self._cur_meta = meta
-            lines = map(self._diff_line,
-                        xrange(line_num, line_num + num_lines),
-                        xrange(i1 + 1, i2 + 1), xrange(j1 + 1, j2 + 1),
+            lines = map(functools.partial(self._diff_line, tag, meta),
+                        range(line_num, line_num + num_lines),
+                        range(i1 + 1, i2 + 1), range(j1 + 1, j2 + 1),
                         a[i1:i2], b[j1:j2], old_lines, new_lines)
-            self._cur_meta = None
+
+            counts[tag] += num_lines
 
             if tag == 'equal' and num_lines > collapse_threshold:
                 last_range_start = num_lines - context_num_lines
@@ -267,6 +290,20 @@ class DiffChunkGenerator(object):
             line_num += num_lines
 
         log_timer.done()
+
+        if not self.interfilediff:
+            insert_count = counts['insert']
+            delete_count = counts['delete']
+            replace_count = counts['replace']
+            equal_count = counts['equal']
+
+            self.filediff.set_line_counts(
+                insert_count=insert_count,
+                delete_count=delete_count,
+                replace_count=replace_count,
+                equal_count=equal_count,
+                total_line_count=(insert_count + delete_count +
+                                  replace_count + equal_count))
 
     def _get_enable_syntax_highlighting(self, old, new, a, b):
         """Returns whether or not we'll be enabling syntax highlighting.
@@ -303,7 +340,7 @@ class DiffChunkGenerator(object):
 
         return True
 
-    def _diff_line(self, v_line_num, old_line_num, new_line_num,
+    def _diff_line(self, tag, meta, v_line_num, old_line_num, new_line_num,
                    old_line, new_line, old_markup, new_markup):
         """Creates a single line in the diff viewer.
 
@@ -313,32 +350,191 @@ class DiffChunkGenerator(object):
         region information, syntax-highlighted HTML for the text,
         and other metadata.
         """
-        if (old_line and new_line and
-                len(old_line) <= self.STYLED_MAX_LINE_LEN and
-                len(new_line) <= self.STYLED_MAX_LINE_LEN and
-                old_line != new_line):
-            old_region, new_region = self._get_line_changed_regions(old_line,
-                                                                    new_line)
+        if (tag == 'replace' and
+            old_line and new_line and
+            len(old_line) <= self.STYLED_MAX_LINE_LEN and
+            len(new_line) <= self.STYLED_MAX_LINE_LEN and
+            old_line != new_line):
+            # Generate information on the regions that changed between the
+            # two lines.
+            old_region, new_region = \
+                get_line_changed_regions(old_line, new_line)
         else:
             old_region = new_region = []
 
-        meta = self._cur_meta
+        old_markup = old_markup or ''
+        new_markup = new_markup or ''
+
+        line_pair = (old_line_num, new_line_num)
+
+        indentation_changes = meta.get('indentation_changes', {})
+
+        if line_pair[0] is not None and line_pair[1] is not None:
+            indentation_change = indentation_changes.get('%d-%d' % line_pair)
+
+            if indentation_change:
+                old_markup, new_markup = self._highlight_indentation(
+                    old_markup, new_markup, *indentation_change)
 
         result = [
             v_line_num,
-            old_line_num or '', mark_safe(old_markup or ''), old_region,
-            new_line_num or '', mark_safe(new_markup or ''), new_region,
-            (old_line_num, new_line_num) in meta['whitespace_lines']
+            old_line_num or '', mark_safe(old_markup), old_region,
+            new_line_num or '', mark_safe(new_markup), new_region,
+            line_pair in meta['whitespace_lines']
         ]
 
-        if old_line_num and old_line_num in meta.get('moved', {}):
-            destination = meta['moved'][old_line_num]
-            result.append(destination)
-        elif new_line_num and new_line_num in meta.get('moved', {}):
-            destination = meta['moved'][new_line_num]
-            result.append(destination)
+        moved_info = {}
+
+        if old_line_num and old_line_num in meta.get('moved-to', {}):
+            moved_info['to'] = (
+                meta['moved-to'][old_line_num],
+                old_line_num - 1 not in meta['moved-to'],
+            )
+
+        if new_line_num and new_line_num in meta.get('moved-from', {}):
+            moved_info['from'] = (
+                meta['moved-from'][new_line_num],
+                new_line_num - 1 not in meta['moved-from'],
+            )
+
+        if moved_info:
+            result.append(moved_info)
 
         return result
+
+    def _highlight_indentation(self, old_markup, new_markup, is_indent,
+                               raw_indent_len, norm_indent_len_diff):
+        """Highlights indentation in an HTML-formatted line.
+
+        This will wrap the indentation in <span> tags, and format it in
+        a way that makes it clear how many spaces or tabs were used.
+        """
+        if is_indent:
+            new_markup = self._wrap_indentation_chars(
+                'indent',
+                new_markup,
+                raw_indent_len,
+                norm_indent_len_diff,
+                self._serialize_indentation)
+        else:
+            old_markup = self._wrap_indentation_chars(
+                'unindent',
+                old_markup,
+                raw_indent_len,
+                norm_indent_len_diff,
+                self._serialize_unindentation)
+
+        return old_markup, new_markup
+
+    def _wrap_indentation_chars(self, class_name, markup, raw_indent_len,
+                                norm_indent_len_diff, serializer):
+        """Wraps characters in a string with indentation markers.
+
+        This will insert the indentation markers and its wrapper in the
+        markup string. It's careful not to interfere with any tags that
+        may be used to highlight that line.
+        """
+        start_pos = 0
+
+        # There may be a tag wrapping this whitespace. If so, we need to
+        # find where the actual whitespace chars begin.
+        while markup[start_pos] == '<':
+            end_tag_pos = markup.find('>', start_pos + 1)
+
+            # We'll only reach this if some corrupted HTML was generated.
+            # We want to know about that.
+            assert end_tag_pos != -1
+
+            start_pos = end_tag_pos + 1
+
+        end_pos = start_pos + raw_indent_len
+
+        indentation = markup[start_pos:end_pos]
+
+        if indentation.strip() != '':
+            # There may be other things in here we didn't expect. It's not
+            # a straight sequence of characters. Give up on highlighting it.
+            return markup
+
+        serialized, remainder = serializer(indentation, norm_indent_len_diff)
+
+        return '%s<span class="%s">%s</span>%s' % (
+            markup[:start_pos],
+            class_name,
+            serialized,
+            remainder + markup[end_pos:])
+
+    def _serialize_indentation(self, chars, norm_indent_len_diff):
+        """Serializes an indentation string into an HTML representation.
+
+        This will show every space as ">", and every tab as "------>|".
+        In the case of tabs, we display as much of it as possible (anchoring
+        to the right-hand side) given the space we have within the tab
+        boundary.
+        """
+        s = ''
+        i = 0
+
+        for j, c in enumerate(chars):
+            if c == ' ':
+                s += '&gt;'
+                i += 1
+            elif c == '\t':
+                # Build "------>|" with the room we have available.
+                in_tab_pos = i % self.TAB_SIZE
+
+                if in_tab_pos < self.TAB_SIZE - 1:
+                    if in_tab_pos < self.TAB_SIZE - 2:
+                        num_dashes = (self.TAB_SIZE - 2 - in_tab_pos)
+                        s += '&mdash;' * num_dashes
+                        i += num_dashes
+
+                    s += '&gt;'
+                    i += 1
+
+                s += '|'
+                i += 1
+
+            if i >= norm_indent_len_diff:
+                break
+
+        return s, chars[j + 1:]
+
+    def _serialize_unindentation(self, chars, norm_indent_len_diff):
+        """Serializes an unindentation string into an HTML representation.
+
+        This will show every space as "<", and every tab as "|<------".
+        In the case of tabs, we display as much of it as possible (anchoring
+        to the left-hand side) given the space we have within the tab
+        boundary.
+        """
+        s = ''
+        i = 0
+
+        for j, c in enumerate(chars):
+            if c == ' ':
+                s += '&lt;'
+                i += 1
+            elif c == '\t':
+                # Build "|<------" with the room we have available.
+                in_tab_pos = i % self.TAB_SIZE
+
+                s += '|'
+                i += 1
+
+                if in_tab_pos < self.TAB_SIZE - 1:
+                    s += '&lt;'
+                    i += 1
+
+                    if in_tab_pos < self.TAB_SIZE - 2:
+                        num_dashes = (self.TAB_SIZE - 2 - in_tab_pos)
+                        s += '&mdash;' * num_dashes
+                        i += num_dashes
+
+            if i >= norm_indent_len_diff:
+                break
+
+        return s, chars[j + 1:]
 
     def _new_chunk(self, all_lines, start, end, collapsable=False,
                    tag='equal', meta=None):
@@ -407,7 +603,7 @@ class DiffChunkGenerator(object):
         except IndexError:
             raise StopIteration
 
-        for i in xrange(last_index, len(possible_functions)):
+        for i in range(last_index, len(possible_functions)):
             linenum, line = possible_functions[i]
             linenum += 1
 
@@ -433,85 +629,6 @@ class DiffChunkGenerator(object):
         lexer.add_filter('codetagify')
 
         return highlight(data, lexer, NoWrapperHtmlFormatter()).splitlines()
-
-    def _convert_to_utf8(self, s, enc):
-        """Returns the passed string as a unicode string.
-
-        If conversion to UTF-8 fails, we try the user-specified encoding, which
-        defaults to ISO 8859-15.  This can be overridden by users inside the
-        repository configuration, which gives users repository-level control
-        over file encodings (file-level control is really, really hard).
-        """
-        if isinstance(s, unicode):
-            return s.encode('utf-8')
-        elif isinstance(s, basestring):
-            try:
-                # First try strict unicode (for when everything is valid utf-8)
-                return unicode(s, 'utf-8')
-            except UnicodeError:
-                # Now try any candidate encodings.
-                for e in enc.split(','):
-                    try:
-                        u = unicode(s, e)
-                        return u.encode('utf-8')
-                    except UnicodeError:
-                        pass
-
-                # Finally, try to convert to straight unicode and replace all
-                # unknown characters.
-                try:
-                    return unicode(s, 'utf-8', errors='replace')
-                except UnicodeError:
-                    raise Exception(
-                        _("Diff content couldn't be converted to UTF-8 "
-                          "using the following encodings: %s") % enc)
-        else:
-            raise TypeError("Value to convert is unexpected type %s", type(s))
-
-    def _get_line_changed_regions(self, oldline, newline):
-        """Returns regions of changes between two similar lines."""
-        if oldline is None or newline is None:
-            return (None, None)
-
-        # Use the SequenceMatcher directly. It seems to give us better results
-        # for this. We should investigate steps to move to the new differ.
-        differ = SequenceMatcher(None, oldline, newline)
-
-        # This thresholds our results -- we don't want to show inter-line diffs
-        # if most of the line has changed, unless those lines are very short.
-
-        # FIXME: just a plain, linear threshold is pretty crummy here.  Short
-        # changes in a short line get lost.  I haven't yet thought of a fancy
-        # nonlinear test.
-        if differ.ratio() < 0.6:
-            return (None, None)
-
-        oldchanges = []
-        newchanges = []
-        back = (0, 0)
-
-        for tag, i1, i2, j1, j2 in differ.get_opcodes():
-            if tag == 'equal':
-                if (i2 - i1 < 3) or (j2 - j1 < 3):
-                    back = (j2 - j1, i2 - i1)
-                continue
-
-            oldstart, oldend = i1 - back[0], i2
-            newstart, newend = j1 - back[1], j2
-
-            if oldchanges != [] and oldstart <= oldchanges[-1][1] < oldend:
-                oldchanges[-1] = (oldchanges[-1][0], oldend)
-            elif not oldline[oldstart:oldend].isspace():
-                oldchanges.append((oldstart, oldend))
-
-            if newchanges != [] and newstart <= newchanges[-1][1] < newend:
-                newchanges[-1] = (newchanges[-1][0], newend)
-            elif not newline[newstart:newend].isspace():
-                newchanges.append((newstart, newend))
-
-            back = (0, 0)
-
-        return oldchanges, newchanges
 
 
 def compute_chunk_last_header(lines, numlines, meta, last_header=None):

@@ -16,7 +16,9 @@ RB.ReviewBoxListView = Backbone.View.extend({
     /*
      * Initializes the list.
      */
-    initialize: function() {
+    initialize: function(options) {
+        this.options = options;
+
         this.diffFragmentQueue = new RB.DiffFragmentQueueView({
             reviewRequestPath: this.options.reviewRequest.get('reviewURL'),
             containerPrefix: 'comment_container',
@@ -53,7 +55,7 @@ RB.ReviewBoxListView = Backbone.View.extend({
 
             review.set({
                 shipIt: $review.data('ship-it'),
-                public: true,
+                'public': true,
                 bodyTop: $body.children('.body_top').text(),
                 bodyBottom: $body.children('.body_bottom').text()
             });
@@ -64,13 +66,11 @@ RB.ReviewBoxListView = Backbone.View.extend({
         }, this);
 
         _.each(this.$el.children('.changedesc'), function(changeBoxEl) {
-            var $changebox = $(changeBoxEl),
-                $text = $changebox.find('.changedesc-text'),
-                box = new RB.CollapsableBoxView({
-                    el: $changebox
-                });
-
-            RB.formatText($text, $text.text());
+            var box = new RB.ChangeBoxView({
+                el: changeBoxEl,
+                reviewRequest: reviewRequest,
+                reviewRequestEditorView: this.options.reviewRequestEditorView
+            });
 
             box.render();
 

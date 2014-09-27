@@ -1,8 +1,9 @@
+from __future__ import unicode_literals
+
 import calendar
 from datetime import datetime, timedelta
 import re
 import time
-import urlparse
 
 try:
     from bzrlib import bzrdir, revisionspec
@@ -14,16 +15,22 @@ try:
     has_bzrlib = True
 except ImportError:
     has_bzrlib = False
+from django.utils import six
 
 from reviewboard.scmtools.core import SCMTool, HEAD, PRE_CREATION
 from reviewboard.scmtools.errors import RepositoryNotFoundError, SCMError
 from reviewboard.ssh import utils as sshutils
 
+try:
+    import urlparse
+    uses_netloc = urlparse.uses_netloc
+except ImportError:
+    import urllib.parse
+    uses_netloc = urllib.parse.uses_netloc
 
 # Register these URI schemes so we can handle them properly.
-urlparse.uses_netloc.append('bzr+ssh')
-urlparse.uses_netloc.append('bzr')
 sshutils.ssh_uri_schemes.append('bzr+ssh')
+uses_netloc.extend(['bzr', 'bzr+ssh'])
 
 
 if has_bzrlib:
@@ -40,7 +47,7 @@ if has_bzrlib:
             args = [self.executable_path]
 
             if port is not None:
-                args.extend(['-p', str(port)])
+                args.extend(['-p', six.text_type(port)])
 
             if username is not None:
                 args.extend(['-l', username])
@@ -57,7 +64,7 @@ if has_bzrlib:
 
     class RBRemoteSSHTransport(RemoteSSHTransport):
         LOCAL_SITE_PARAM_RE = \
-            re.compile('\?rb-local-site-name=([A-Za-z0-9\-_.]+)')
+            re.compile(r'\?rb-local-site-name=([A-Za-z0-9\-_.]+)')
 
         def __init__(self, base, *args, **kwargs):
             m = self.LOCAL_SITE_PARAM_RE.search(base)
@@ -68,7 +75,8 @@ if has_bzrlib:
             else:
                 self.local_site_name = None
 
-            super(RBRemoteSSHTransport, self).__init__(base, *args, **kwargs)
+            super(RBRemoteSSHTransport, self).__init__(
+                base.encode('ascii'), *args, **kwargs)
 
         def _build_medium(self):
             client_medium, auth = \
@@ -113,15 +121,21 @@ class BZRTool(SCMTool):
         branch = None
         try:
             try:
-                branch, relpath = bzrdir.BzrDir.open_containing_tree_or_branch(filepath)[1:]
+                branch, relpath = bzrdir.BzrDir.open_containing_tree_or_branch(
+                    filepath.encode('ascii'))[1:]
                 branch.lock_read()
-                revtree = revisionspec.RevisionSpec.from_string(revspec).as_tree(branch)
+                revtree = revisionspec.RevisionSpec.from_string(
+                    revspec.encode('ascii')).as_tree(branch)
                 fileid = revtree.path2id(relpath)
                 if fileid:
-                    contents = revtree.get_file_text(fileid)
+                    # XXX: get_file_text returns str, which isn't Python 3
+                    # safe. According to the internet they have no immediate
+                    # plans to port to 3, so we may find it hard to support
+                    # that combination.
+                    contents = bytes(revtree.get_file_text(fileid))
                 else:
-                    contents = ""
-            except BzrError, e:
+                    contents = b''
+            except BzrError as e:
                 raise SCMError(e)
         finally:
             if branch:
@@ -164,36 +178,42 @@ class BZRTool(SCMTool):
     def _revspec_from_revision(self, revision):
         """Returns a revspec based on the revision found in the diff.
 
-        In addition to the standard date format from "bzr diff", this
-        function supports the revid: syntax provided by the bzr diff-revid plugin.
+        In addition to the standard date format from "bzr diff", this function
+        supports the revid: syntax provided by the bzr diff-revid plugin.
         """
         if revision == HEAD:
             revspec = 'last:1'
         elif revision.startswith('revid:'):
             revspec = revision
         else:
-            revspec = 'date:' + str(self._revision_timestamp_to_local(revision))
+            revspec = 'date:' + six.text_type(
+                self._revision_timestamp_to_local(revision))
 
         return revspec
 
     def _revision_timestamp_to_local(self, timestamp_str):
-        """When using a date to ask bzr for a file revision, it expects
-        the date to be in local time. So, this function converts a
-        timestamp from a bzr diff file to local time.
+        """Convert a timestamp to local time.
+
+        When using a date to ask bzr for a file revision, it expects the date
+        to be in local time. So, this function converts a timestamp from a bzr
+        diff file to local time.
         """
 
-        timestamp = datetime(*time.strptime(timestamp_str[0:19], BZRTool.DIFF_TIMESTAMP_FORMAT)[0:6])
+        timestamp = datetime(*time.strptime(
+            timestamp_str[0:19], BZRTool.DIFF_TIMESTAMP_FORMAT)[0:6])
 
-        # Now, parse the difference to GMT time (such as +0200)
-        # If only strptime() supported %z, we wouldn't have to do this manually.
-        delta = timedelta(hours=int(timestamp_str[21:23]), minutes=int(timestamp_str[23:25]))
+        # Now, parse the difference to GMT time (such as +0200). If only
+        # strptime() supported %z, we wouldn't have to do this manually.
+        delta = timedelta(hours=int(timestamp_str[21:23]),
+                          minutes=int(timestamp_str[23:25]))
         if timestamp_str[20] == '+':
             timestamp -= delta
         else:
             timestamp += delta
 
         # convert to local time
-        return datetime.utcfromtimestamp(calendar.timegm(timestamp.timetuple()))
+        return datetime.utcfromtimestamp(
+            calendar.timegm(timestamp.timetuple()))
 
     @classmethod
     def check_repository(cls, path, username=None, password=None,
@@ -217,10 +237,11 @@ class BZRTool(SCMTool):
 
         try:
             tree, branch, repository, relpath = \
-                bzrdir.BzrDir.open_containing_tree_branch_or_repository(path)
+                bzrdir.BzrDir.open_containing_tree_branch_or_repository(
+                    path.encode('ascii'))
         except AttributeError:
             raise RepositoryNotFoundError()
-        except NotBranchError, e:
+        except NotBranchError:
             raise RepositoryNotFoundError()
-        except Exception, e:
+        except Exception as e:
             raise SCMError(e)

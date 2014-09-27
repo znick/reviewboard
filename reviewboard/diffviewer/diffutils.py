@@ -1,16 +1,18 @@
-from __future__ import with_statement
+from __future__ import unicode_literals
+
 import os
 import re
 import subprocess
 import tempfile
+from difflib import SequenceMatcher
 
+from django.core.exceptions import ObjectDoesNotExist
+from django.utils import six
 from django.utils.translation import ugettext as _
 from djblets.log import log_timed
 from djblets.siteconfig.models import SiteConfiguration
 from djblets.util.contextmanagers import controlled_subprocess
 
-from reviewboard.accounts.models import Profile
-from reviewboard.admin.checks import get_can_enable_syntax_highlighting
 from reviewboard.scmtools.core import PRE_CREATION, HEAD
 
 
@@ -18,6 +20,49 @@ NEWLINE_CONVERSION_RE = re.compile(r'\r(\r?\n)?')
 
 ALPHANUM_RE = re.compile(r'\w')
 WHITESPACE_RE = re.compile(r'\s')
+
+
+def convert_to_unicode(s, encoding_list):
+    """Returns the passed string as a unicode object.
+
+    If conversion to unicode fails, we try the user-specified encoding, which
+    defaults to ISO 8859-15. This can be overridden by users inside the
+    repository configuration, which gives users repository-level control over
+    file encodings.
+
+    Ideally, we'd like to have per-file encodings, but this is hard. The best
+    we can do now is a comma-separated list of things to try.
+
+    Returns the encoding type which was used and the decoded unicode object.
+    """
+    if isinstance(s, six.text_type):
+        # Nothing to do
+        return 'utf-8', s
+    elif isinstance(s, six.string_types):
+        try:
+            # First try strict utf-8
+            enc = 'utf-8'
+            return enc, six.text_type(s, enc)
+        except UnicodeError:
+            # Now try any candidate encodings
+            for e in encoding_list:
+                try:
+                    return e, six.text_type(s, e)
+                except (UnicodeError, LookupError):
+                    pass
+
+            # Finally, try to convert to unicode and replace all unknown
+            # characters.
+            try:
+                enc = 'utf-8'
+                return enc, six.text_type(s, enc, errors='replace')
+            except UnicodeError:
+                raise Exception(
+                    _("Diff content couldn't be converted to unicode using "
+                      "the following encodings: %s")
+                    % (['utf-8'] + encoding_list))
+    else:
+        raise TypeError('Value to convert is unexpected type %s', type(s))
 
 
 def convert_line_endings(data):
@@ -49,7 +94,7 @@ def patch(diff, file, filename, request=None):
     log_timer = log_timed("Patching file %s" % filename,
                           request=request)
 
-    if diff.strip() == "":
+    if not diff.strip():
         # Someone uploaded an unchanged file. Return the one we're patching.
         return file
 
@@ -67,19 +112,16 @@ def patch(diff, file, filename, request=None):
 
     process = subprocess.Popen(['patch', '-o', newfile, oldfile],
                                stdin=subprocess.PIPE, stdout=subprocess.PIPE,
-                               stderr=subprocess.STDOUT, cwd=tempdir)
+                               stderr=subprocess.PIPE, cwd=tempdir)
 
     with controlled_subprocess("patch", process) as p:
-        p.stdin.write(diff)
-        p.stdin.close()
-        patch_output = p.stdout.read()
-        failure = p.wait()
+        stdout, stderr = p.communicate(diff)
+        failure = p.returncode
 
     if failure:
-        f = open("%s.diff" %
-                 (os.path.join(tempdir, os.path.basename(filename))), "w")
-        f.write(diff)
-        f.close()
+        absolute_path = os.path.join(tempdir, os.path.basename(filename))
+        with open("%s.diff" % absolute_path, 'w') as f:
+            f.write(diff)
 
         log_timer.done()
 
@@ -94,12 +136,11 @@ def patch(diff, file, filename, request=None):
             % {
                 'filename': filename,
                 'tempdir': tempdir,
-                'output': patch_output,
+                'output': stderr,
             })
 
-    f = open(newfile, "r")
-    data = f.read()
-    f.close()
+    with open(newfile, "r") as f:
+        data = f.read()
 
     os.unlink(oldfile)
     os.unlink(newfile)
@@ -110,22 +151,25 @@ def patch(diff, file, filename, request=None):
     return data
 
 
-def get_original_file(filediff, request=None):
+def get_original_file(filediff, request, encoding_list):
     """
     Get a file either from the cache or the SCM, applying the parent diff if
     it exists.
 
     SCM exceptions are passed back to the caller.
     """
-    data = ""
+    data = b""
 
-    if filediff.source_revision != PRE_CREATION:
+    if not filediff.is_new:
         repository = filediff.diffset.repository
         data = repository.get_file(
             filediff.source_file,
             filediff.source_revision,
             base_commit_id=filediff.diffset.base_commit_id,
             request=request)
+
+        # Convert to unicode before we do anything to manipulate the string.
+        encoding, data = convert_to_unicode(data, encoding_list)
 
         # Repository.get_file doesn't know or care about how we need line
         # endings to work. So, we'll just transform every time.
@@ -139,6 +183,9 @@ def get_original_file(filediff, request=None):
         # duplicating the cached contents.
         data = convert_line_endings(data)
 
+        # Convert back to bytes using whichever encoding we used to decode.
+        data = data.encode(encoding)
+
     # If there's a parent diff set, apply it to the buffer.
     if filediff.parent_diff:
         data = patch(filediff.parent_diff, data, filediff.source_file,
@@ -147,7 +194,7 @@ def get_original_file(filediff, request=None):
     return data
 
 
-def get_patched_file(buffer, filediff, request=None):
+def get_patched_file(buffer, filediff, request):
     tool = filediff.diffset.repository.get_scmtool()
     diff = tool.normalize_patch(filediff.diff, filediff.source_file,
                                 filediff.source_revision)
@@ -205,11 +252,21 @@ def get_diff_files(diffset, filediff=None, interdiffset=None, request=None):
     # source file.
     interdiff_map = {}
 
+    # Filediffs that were created with leading slashes stripped won't match
+    # those created with them present, so we need to compare them without in
+    # order for the filenames to match up properly.
+    parser = diffset.repository.get_scmtool().get_parser('')
+
+    def _normfile(filename):
+        return parser.normalize_diff_filename(filename)
+
     if interdiffset:
         for interfilediff in interdiffset.files.all():
+            interfilediff_source_file = _normfile(interfilediff.source_file)
+
             if (not filediff or
-                    filediff.source_file == interfilediff.source_file):
-                interdiff_map[interfilediff.source_file] = interfilediff
+                _normfile(filediff.source_file) == interfilediff_source_file):
+                interdiff_map[interfilediff_source_file] = interfilediff
 
     # In order to support interdiffs properly, we need to display diffs
     # on every file in the union of both diffsets. Iterating over one diffset
@@ -223,7 +280,7 @@ def get_diff_files(diffset, filediff=None, interdiffset=None, request=None):
 
     filediff_parts = [
         (temp_filediff,
-         interdiff_map.pop(temp_filediff.source_file, None),
+         interdiff_map.pop(_normfile(temp_filediff.source_file), None),
          has_interdiffset)
         for temp_filediff in filediffs
     ]
@@ -240,7 +297,7 @@ def get_diff_files(diffset, filediff=None, interdiffset=None, request=None):
         # this.
         filediff_parts += [
             (interdiff, None, False)
-            for interdiff in interdiff_map.itervalues()
+            for interdiff in six.itervalues(interdiff_map)
         ]
 
     files = []
@@ -248,7 +305,7 @@ def get_diff_files(diffset, filediff=None, interdiffset=None, request=None):
     for parts in filediff_parts:
         filediff, interfilediff, force_interdiff = parts
 
-        newfile = (filediff.source_revision == PRE_CREATION)
+        newfile = filediff.is_new
 
         if interdiffset:
             # First, find out if we want to even process this one.
@@ -261,8 +318,8 @@ def get_diff_files(diffset, filediff=None, interdiffset=None, request=None):
             source_revision = _("Diff Revision %s") % diffset.revision
 
             if not interfilediff and force_interdiff:
-                dest_revision = _("Diff Revision %s - File Reverted") % \
-                                interdiffset.revision
+                dest_revision = (_("Diff Revision %s - File Reverted") %
+                                 interdiffset.revision)
             else:
                 dest_revision = _("Diff Revision %s") % interdiffset.revision
         else:
@@ -273,24 +330,13 @@ def get_diff_files(diffset, filediff=None, interdiffset=None, request=None):
             else:
                 dest_revision = _("New Change")
 
-        i = filediff.source_file.rfind('/')
-
-        if i != -1:
-            basepath = filediff.source_file[:i]
-            basename = filediff.source_file[i + 1:]
-        else:
-            basepath = ""
-            basename = filediff.source_file
-
         tool = filediff.diffset.repository.get_scmtool()
         depot_filename = tool.normalize_path_for_display(filediff.source_file)
         dest_filename = tool.normalize_path_for_display(filediff.dest_file)
 
-        files.append({
+        f = {
             'depot_filename': depot_filename,
             'dest_filename': dest_filename or depot_filename,
-            'basename': basename,
-            'basepath': basepath,
             'revision': source_revision,
             'dest_revision': dest_revision,
             'filediff': filediff,
@@ -299,32 +345,23 @@ def get_diff_files(diffset, filediff=None, interdiffset=None, request=None):
             'binary': filediff.binary,
             'deleted': filediff.deleted,
             'moved': filediff.moved,
+            'copied': filediff.copied,
+            'moved_or_copied': filediff.moved or filediff.copied,
             'newfile': newfile,
             'index': len(files),
             'chunks_loaded': False,
             'is_new_file': (newfile and not interfilediff and
                             not filediff.parent_diff),
-        })
+        }
 
-    def cmp_file(x, y):
-        # Sort based on basepath in asc order
-        if x["basepath"] != y["basepath"]:
-            return cmp(x["basepath"], y["basepath"])
+        if force_interdiff:
+            f['force_interdiff_revision'] = interdiffset.revision
 
-        # Sort based on filename in asc order, then based on extension in desc
-        # order, to make *.h be ahead of *.c/cpp
-        x_file, x_ext = os.path.splitext(x["basename"])
-        y_file, y_ext = os.path.splitext(y["basename"])
-        if x_file != y_file:
-            return cmp(x_file, y_file)
-        else:
-            return cmp(y_ext, x_ext)
-
-    files.sort(cmp_file)
+        files.append(f)
 
     log_timer.done()
 
-    return files
+    return get_sorted_filediffs(files, key=lambda f: f['filediff'])
 
 
 def populate_diff_chunks(files, enable_syntax_highlighting=True,
@@ -492,10 +529,105 @@ def get_enable_highlighting(user):
         try:
             profile = user.get_profile()
             user_syntax_highlighting = profile.syntax_highlighting
-        except Profile.DoesNotExist:
+        except ObjectDoesNotExist:
             pass
 
     siteconfig = SiteConfiguration.objects.get_current()
     return (siteconfig.get('diffviewer_syntax_highlighting') and
-            user_syntax_highlighting and
-            get_can_enable_syntax_highlighting())
+            user_syntax_highlighting)
+
+
+def get_line_changed_regions(oldline, newline):
+    """Returns regions of changes between two similar lines."""
+    if oldline is None or newline is None:
+        return None, None
+
+    # Use the SequenceMatcher directly. It seems to give us better results
+    # for this. We should investigate steps to move to the new differ.
+    differ = SequenceMatcher(None, oldline, newline)
+
+    # This thresholds our results -- we don't want to show inter-line diffs
+    # if most of the line has changed, unless those lines are very short.
+
+    # FIXME: just a plain, linear threshold is pretty crummy here.  Short
+    # changes in a short line get lost.  I haven't yet thought of a fancy
+    # nonlinear test.
+    if differ.ratio() < 0.6:
+        return None, None
+
+    oldchanges = []
+    newchanges = []
+    back = (0, 0)
+
+    for tag, i1, i2, j1, j2 in differ.get_opcodes():
+        if tag == 'equal':
+            if (i2 - i1 < 3) or (j2 - j1 < 3):
+                back = (j2 - j1, i2 - i1)
+
+            continue
+
+        oldstart, oldend = i1 - back[0], i2
+        newstart, newend = j1 - back[1], j2
+
+        if oldchanges and oldstart <= oldchanges[-1][1] < oldend:
+            oldchanges[-1] = (oldchanges[-1][0], oldend)
+        elif not oldline[oldstart:oldend].isspace():
+            oldchanges.append((oldstart, oldend))
+
+        if newchanges and newstart <= newchanges[-1][1] < newend:
+            newchanges[-1] = (newchanges[-1][0], newend)
+        elif not newline[newstart:newend].isspace():
+            newchanges.append((newstart, newend))
+
+        back = (0, 0)
+
+    return oldchanges, newchanges
+
+
+def get_sorted_filediffs(filediffs, key=None):
+    """Sorts a list of filediffs.
+
+    The list of filediffs will be sorted first by their base paths in
+    ascending order.
+
+    Within a base path, they'll be sorted by base name (minus the extension)
+    in ascending order.
+
+    If two files have the same base path and base name, we'll sort by the
+    extension in descending order. This will make *.h sort ahead of *.c/cpp,
+    for example.
+
+    If the list being passed in is actually not a list of FileDiffs, it
+    must provide a callable ``key`` parameter that will return a FileDiff
+    for the given entry in the list. This will only be called once per
+    item.
+    """
+    def cmp_filediffs(x, y):
+        # Sort based on basepath in ascending order.
+        if x[0] != y[0]:
+            return cmp(x[0], y[0])
+
+        # Sort based on filename in ascending order, then based on
+        # the extension in descending order, to make *.h sort ahead of
+        # *.c/cpp.
+        x_file, x_ext = os.path.splitext(x[1])
+        y_file, y_ext = os.path.splitext(y[1])
+
+        if x_file == y_file:
+            return cmp(y_ext, x_ext)
+        else:
+            return cmp(x_file, y_file)
+
+    def make_key(filediff):
+        if key:
+            filediff = key(filediff)
+
+        filename = filediff.source_file
+        i = filename.rfind('/')
+
+        if i == -1:
+            return '', filename
+        else:
+            return filename[:i], filename[i + 1:]
+
+    return sorted(filediffs, cmp=cmp_filediffs, key=make_key)

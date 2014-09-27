@@ -23,7 +23,10 @@
 # SOFTWARE OR THE USE OR OTHER DEALINGS IN THE SOFTWARE.
 #
 
+from __future__ import unicode_literals
+
 import os
+import stat
 import sys
 import tempfile
 
@@ -48,7 +51,7 @@ except ImportError:
         pass
 
 from django.conf import settings
-from djblets.util.misc import generate_media_serial
+from djblets.cache.serials import generate_media_serial
 
 
 class RBTestRunner(DjangoTestSuiteRunner):
@@ -58,6 +61,7 @@ class RBTestRunner(DjangoTestSuiteRunner):
         # Default to testing in a non-subdir install.
         settings.SITE_ROOT = "/"
 
+        settings.AJAX_SERIAL = 123
         settings.STATIC_URL = settings.SITE_ROOT + 'static/'
         settings.MEDIA_URL = settings.SITE_ROOT + 'media/'
         settings.PASSWORD_HASHERS = (
@@ -78,6 +82,7 @@ class RBTestRunner(DjangoTestSuiteRunner):
         self.nose_argv = [
             sys.argv[0],
             '-v',
+            '--match=^test',
             '--with-doctest',
             '--doctest-extension=.txt',
         ]
@@ -90,18 +95,22 @@ class RBTestRunner(DjangoTestSuiteRunner):
         for package in settings.TEST_PACKAGES:
             self.nose_argv.append('--where=%s' % package)
 
-        if '--with-webtests' in sys.argv:
-            self.nose_argv.append('--where=webtests')
-            sys.argv.remove('--with-webtests')
-
         if '--with-profiling' in sys.argv:
             sys.argv.remove('--with-profiling')
             profiling = True
         else:
             profiling = False
 
+        # If the test files are executable on the file system, nose will need
+        # the --exe argument to run them
+        known_file = os.path.join(os.path.dirname(__file__), 'settings.py')
+
+        if (os.path.exists(known_file) and
+            os.stat(known_file).st_mode & stat.S_IXUSR):
+            self.nose_argv.append('--exe')
+
         # manage.py captures everything before "--"
-        if len(sys.argv) > 2 and sys.argv.__contains__("--"):
+        if len(sys.argv) > 2 and '--' in sys.argv:
             self.nose_argv += sys.argv[(sys.argv.index("--") + 1):]
 
         if profiling:
@@ -137,12 +146,17 @@ class RBTestRunner(DjangoTestSuiteRunner):
         settings.STATIC_ROOT = os.path.join(self.tempdir, 'static')
         settings.MEDIA_ROOT = os.path.join(self.tempdir, 'media')
         images_dir = os.path.join(settings.MEDIA_ROOT, "uploaded", "images")
+        legacy_extensions_media = os.path.join(settings.MEDIA_ROOT, 'ext')
+        extensions_media = os.path.join(settings.STATIC_ROOT, 'ext')
 
-        if not os.path.exists(images_dir):
-            os.makedirs(images_dir)
+        for dirname in (images_dir, legacy_extensions_media, extensions_media):
+            if not os.path.exists(dirname):
+                os.makedirs(dirname)
 
         # Collect all static media needed for tests, including web-based tests.
-        execute_from_command_line([__file__, 'collectstatic', '--noinput'])
+        execute_from_command_line([
+            __file__, 'collectstatic', '--noinput', '-v', '0',
+        ])
 
         generate_media_serial()
 

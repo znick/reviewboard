@@ -1,4 +1,4 @@
-describe('views/ReviewDialogView', function() {
+suite('rb/views/ReviewDialogView', function() {
     var baseEmptyCommentListPayload = {
             stat: 'ok',
             total_results: 0,
@@ -63,7 +63,7 @@ describe('views/ReviewDialogView', function() {
         review,
         dlg;
 
-    function createCommentDialog() {
+    function createReviewDialog() {
         return RB.ReviewDialogView.create({
             review: review,
             container: $testsScratch,
@@ -126,7 +126,7 @@ describe('views/ReviewDialogView', function() {
             });
 
             it('With a review', function() {
-                dlg = createCommentDialog();
+                dlg = createReviewDialog();
 
                 expect(dlg).toBeTruthy();
                 expect(RB.ReviewDialogView._instance).toBe(dlg);
@@ -136,9 +136,9 @@ describe('views/ReviewDialogView', function() {
             });
 
             it('With existing instance', function() {
-                dlg = createCommentDialog();
+                dlg = createReviewDialog();
 
-                expect(createCommentDialog).toThrow();
+                expect(createReviewDialog).toThrow();
 
                 expect(RB.ReviewDialogView._instance).toBe(dlg);
                 expect($testsScratch.children().length).toBe(2);
@@ -149,7 +149,7 @@ describe('views/ReviewDialogView', function() {
     describe('Instances', function() {
         describe('Methods', function() {
             it('close', function() {
-                dlg = createCommentDialog();
+                dlg = createReviewDialog();
                 expect($testsScratch.children().length).toBe(2);
 
                 dlg.close();
@@ -168,10 +168,10 @@ describe('views/ReviewDialogView', function() {
                     reviewRequestEditor: reviewRequestEditor
                 });
 
-                expect(dlg._$bodyTop.val()).toBe('');
-                expect(dlg._$bodyBottom.val()).toBe('');
+                expect(dlg._bodyTopView.$editor.text()).toBe('');
+                expect(dlg._bodyBottomView.$editor.text()).toBe('');
+                expect(dlg._bodyBottomView.$el.is(':visible')).toBe(false);
                 expect(dlg._$shipIt.prop('checked')).toBe(false);
-                expect(dlg._$bodyBottom.is(':visible')).toBe(false);
                 expect(dlg._$spinner).toBe(null);
             });
 
@@ -229,10 +229,13 @@ describe('views/ReviewDialogView', function() {
                         reviewRequestEditor: reviewRequestEditor
                     });
 
-                    expect(dlg._$bodyTop.val()).toBe(bodyTopText);
-                    expect(dlg._$bodyBottom.val()).toBe(bodyBottomText);
+                    expect(dlg._bodyTopView.$editor.text())
+                        .toBe(bodyTopText);
+                    expect(dlg._bodyBottomView.$editor.text())
+                        .toBe(bodyBottomText);
+                    expect(dlg._bodyBottomView.$el.is(':visible'))
+                        .toBe(false);
                     expect(dlg._$shipIt.prop('checked')).toBe(shipIt);
-                    expect(dlg._$bodyBottom.is(':visible')).toBe(false);
                     expect(dlg._$comments.children().length).toBe(0);
                     expect(dlg._$spinner).toBe(null);
                 });
@@ -255,12 +258,12 @@ describe('views/ReviewDialogView', function() {
                     expect(dlg._commentViews.length).toBe(1);
 
                     commentView = dlg._commentViews[0];
-                    expect(commentView.$textarea.val()).toBe(
-                        diffCommentPayload.text);
+                    expect(commentView.$editor.text())
+                        .toBe(diffCommentPayload.text);
                     expect(commentView.$issueOpened.prop('checked'))
                         .toBe(diffCommentPayload.issue_opened);
 
-                    expect(dlg._$bodyBottom.is(':visible')).toBe(true);
+                    expect(dlg._bodyBottomView.$el.is(':visible')).toBe(true);
                     expect(dlg._$spinner).toBe(null);
                 });
 
@@ -280,8 +283,8 @@ describe('views/ReviewDialogView', function() {
                     expect(dlg._commentViews.length).toBe(1);
 
                     commentView = dlg._commentViews[0];
-                    expect(commentView.$textarea.val()).toBe(
-                        fileAttachmentCommentPayload.text);
+                    expect(commentView.$editor.text())
+                        .toBe(fileAttachmentCommentPayload.text);
                     expect(commentView.$issueOpened.prop('checked')).toBe(
                         fileAttachmentCommentPayload.issue_opened);
                     expect(commentView.$('img').attr('src')).toBe(
@@ -293,7 +296,7 @@ describe('views/ReviewDialogView', function() {
                     expect(commentView.$('.thumbnail').html()).toBe(
                         fileAttachmentCommentPayload.thumbnail_html);
 
-                    expect(dlg._$bodyBottom.is(':visible')).toBe(true);
+                    expect(dlg._bodyBottomView.$el.is(':visible')).toBe(true);
                     expect(dlg._$spinner).toBe(null);
                 });
 
@@ -306,14 +309,14 @@ describe('views/ReviewDialogView', function() {
                         screenshotCommentPayload
                     ];
 
-                    dlg = createCommentDialog();
+                    dlg = createReviewDialog();
 
                     expect($.ajax).toHaveBeenCalled();
                     expect(dlg._commentViews.length).toBe(1);
 
                     commentView = dlg._commentViews[0];
-                    expect(commentView.$textarea.val()).toBe(
-                        screenshotCommentPayload.text);
+                    expect(commentView.$editor.text())
+                        .toBe(screenshotCommentPayload.text);
                     expect(commentView.$issueOpened.prop('checked')).toBe(
                         screenshotCommentPayload.issue_opened);
 
@@ -333,7 +336,7 @@ describe('views/ReviewDialogView', function() {
                     expect($filenameA.text()).toBe(
                         screenshotCommentPayload.screenshot.caption);
 
-                    expect(dlg._$bodyBottom.is(':visible')).toBe(true);
+                    expect(dlg._bodyBottomView.$el.is(':visible')).toBe(true);
                     expect(dlg._$spinner).toBe(null);
                 });
             });
@@ -342,33 +345,7 @@ describe('views/ReviewDialogView', function() {
         describe('Saving', function() {
             var fileAttachmentCommentsPayload,
                 diffCommentsPayload,
-                screenshotCommentsPayload,
-                commentView,
-                comment;
-
-            function testSaveComment() {
-                var newCommentText = 'New commet text',
-                    newIssueOpened = false;
-
-                dlg = createCommentDialog();
-
-                expect(dlg._commentViews.length).toBe(1);
-
-                commentView = dlg._commentViews[0];
-                comment = commentView.model;
-
-                /* Set some new state for the comment. */
-                commentView.$textarea.val(newCommentText);
-                commentView.$issueOpened.prop('checked', newIssueOpened);
-
-                spyOn(comment, 'save');
-
-                dlg._saveReview();
-
-                expect(comment.save).toHaveBeenCalled();
-                expect(comment.get('text')).toBe(newCommentText);
-                expect(comment.get('issueOpened')).toBe(newIssueOpened);
-            }
+                screenshotCommentsPayload;
 
             beforeEach(function() {
                 review.set({
@@ -415,42 +392,17 @@ describe('views/ReviewDialogView', function() {
                     bodyBottomText = 'My new body bottom',
                     shipIt = true;
 
-                dlg = createCommentDialog();
+                dlg = createReviewDialog();
 
-                dlg._$bodyTop.val(bodyTopText);
-                dlg._$bodyBottom.val(bodyBottomText);
+                dlg._bodyTopView.$editor.text(bodyTopText);
+                dlg._bodyBottomView.$editor.text(bodyBottomText);
                 dlg._$shipIt.prop('checked', shipIt);
                 dlg._saveReview();
 
-                expect(dlg._$bodyTop.val()).toBe(bodyTopText);
-                expect(dlg._$bodyBottom.val()).toBe(bodyBottomText);
+                expect(dlg._bodyTopView.$editor.text()).toBe(bodyTopText);
+                expect(dlg._bodyBottomView.$editor.text()).toBe(bodyBottomText);
                 expect(dlg._$shipIt.prop('checked')).toBe(shipIt);
                 expect(review.save).toHaveBeenCalled();
-            });
-
-            it('Diff comments', function() {
-                diffCommentsPayload.total_results = 1;
-                diffCommentsPayload.diff_comments = [diffCommentPayload];
-
-                testSaveComment();
-            });
-
-            it('File attachment comments', function() {
-                fileAttachmentCommentsPayload.total_results = 1;
-                fileAttachmentCommentsPayload.file_attachment_comments = [
-                    fileAttachmentCommentPayload
-                ];
-
-                testSaveComment();
-            });
-
-            it('Screenshot comments', function() {
-                screenshotCommentsPayload.total_results = 1;
-                screenshotCommentsPayload.screenshot_comments = [
-                    screenshotCommentPayload
-                ];
-
-                testSaveComment();
             });
         });
     });

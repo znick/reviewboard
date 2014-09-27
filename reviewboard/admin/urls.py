@@ -24,14 +24,16 @@
 # SOFTWARE OR THE USE OR OTHER DEALINGS IN THE SOFTWARE.
 #
 
+from __future__ import unicode_literals
 
-from django.conf.urls.defaults import include, patterns, url
+from django.conf.urls import include, patterns, url
 from django.contrib import admin
+from django.views.generic import RedirectView
 
 from reviewboard.admin import forms
 
 
-NEWS_FEED = "http://www.reviewboard.org/news/feed/"
+NEWS_FEED = "https://www.reviewboard.org/news/feed/"
 
 settings_urlpatterns = patterns(
     'reviewboard.admin.views',
@@ -74,7 +76,10 @@ urlpatterns = patterns(
     url(r'^cache/$', 'cache_stats', name='admin-server-cache'),
     (r'^settings/', include(settings_urlpatterns)),
     (r'^widget-toggle/', 'widget_toggle'),
+    (r'^widget-move/', 'widget_move'),
+    (r'^widget-select/', 'widget_select'),
     (r'^widget-activity/', 'widget_activity'),
+    url(r'^security/$', 'security', name='admin-security-checks'),
 )
 
 urlpatterns += patterns(
@@ -86,10 +91,8 @@ urlpatterns += patterns(
     ('^feed/news/$', 'djblets.feedview.views.view_feed',
      {'template_name': 'admin/feed.html',
       'url': NEWS_FEED}),
-    (r'^feed/news/rss/$', 'django.views.generic.simple.redirect_to',
-     {'url': NEWS_FEED}),
+    (r'^feed/news/rss/$', RedirectView.as_view(url=NEWS_FEED)),
 
-    url(r'^settings/$', 'django.views.generic.simple.redirect_to',
-        {'url': 'general/'},
+    url(r'^settings/$', RedirectView.as_view(url='general/'),
         name="site-settings"),
 )

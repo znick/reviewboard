@@ -13,7 +13,7 @@ if (marked !== undefined) {
         langPrefix : 'language-',
         highlight: function(code, lang) {
             // Use google code prettify to render syntax highlighting
-            return prettyPrintOne(code, lang, true /* line nos. */);
+            return prettyPrintOne(_.escape(code), lang, true /* line nos. */);
         }
     });
 }
@@ -23,8 +23,10 @@ if (marked !== undefined) {
  * Format the given text and put it into $el.
  *
  * If the given element is expected to be rich text, this will format the text
- * using markdown. If not, it will add links to review requests and bug
- * trackers but otherwise leave the text alone.
+ * using Markdown.
+ *
+ * Otherwise, if it's not expected and won't be converted, then it will add
+ * links to review requests and bug trackers but otherwise leave the text alone.
  */
 RB.formatText = function($el, text, bugTrackerURL) {
     var markedUp = text;
@@ -43,18 +45,39 @@ RB.formatText = function($el, text, bugTrackerURL) {
             });
         }
 
-        // Now linkify and markdown-ize
-        markedUp = RB.LinkifyUtils.linkifyReviewRequests(markedUp, true);
-        markedUp = RB.LinkifyUtils.linkifyBugs(markedUp, bugTrackerURL, true);
-        markedUp = marked(markedUp);
+        if (markedUp.length > 0) {
+            // Now linkify and markdown-ize
+            markedUp = RB.LinkifyUtils.linkifyReviewRequests(markedUp, true);
+            markedUp = RB.LinkifyUtils.linkifyBugs(markedUp, bugTrackerURL, true);
+            markedUp = marked(markedUp);
+
+            /*
+             * markup() adds newlines to each directive, resulting in a trailing
+             * newline for the contents. Since this may be formatted inside a
+             * <pre>, we want to make sure we don't have that extra newline.
+             */
+            markedUp = markedUp.trim();
+        }
 
         $el
             .empty()
             .append(markedUp)
-            .addClass('rich-text');
+            .addClass('rich-text')
+            .removeClass('loading')
+            .find('a')
+                .attr('target', '_blank');
     } else {
         $el.html(RB.LinkifyUtils.linkifyText(text, bugTrackerURL));
     }
+};
+
+
+/*
+ * Format a timestamp in the same way that Django templates would.
+ */
+RB.FormatTimestamp = function(timestamp) {
+    return timestamp.format('MMMM Do, YYYY, h:mm ') +
+           (timestamp.hour() < 12 ? 'a.m.' : 'p.m.');
 };
 
 

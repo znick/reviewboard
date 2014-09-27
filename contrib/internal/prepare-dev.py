@@ -1,7 +1,8 @@
 #!/usr/bin/env python
 
+from __future__ import print_function, unicode_literals
+
 import os
-import pkg_resources
 import platform
 import sys
 from optparse import OptionParser
@@ -17,14 +18,15 @@ class SiteOptions(object):
 
 def create_settings():
     if not os.path.exists("settings_local.py"):
-        print "Creating a settings_local.py in the current directory."
-        print "This can be modified with custom settings."
+        print("Creating a settings_local.py in the current directory.")
+        print("This can be modified with custom settings.")
 
         src_path = os.path.join("contrib", "conf", "settings_local.py.tmpl")
+        # XXX: Once we switch to Python 2.7+, use the multiple form of 'with'
         in_fp = open(src_path, "r")
         out_fp = open("settings_local.py", "w")
 
-        for line in in_fp.xreadlines():
+        for line in in_fp:
             if line.startswith("SECRET_KEY = "):
                 secret_key = ''.join([
                     choice('abcdefghijklmnopqrstuvwxyz0123456789!@#$%^&*(-_=+)')
@@ -45,7 +47,8 @@ def create_settings():
             elif line.strip().startswith("'USER': "):
                 out_fp.write("        'USER': '%s',\n" % options.db_user)
             elif line.strip().startswith("'PASSWORD': "):
-                out_fp.write("        'PASSWORD': '%s',\n" % options.db_password)
+                out_fp.write("        'PASSWORD': '%s',\n"
+                             % options.db_password)
             else:
                 out_fp.write(line)
 
@@ -54,7 +57,7 @@ def create_settings():
 
 
 def install_media(site):
-    print "Rebuilding media paths..."
+    print("Rebuilding media paths...")
 
     media_path = os.path.join("htdocs", "media")
     uploaded_path = os.path.join(site.install_dir, media_path, "uploaded")
@@ -63,18 +66,6 @@ def install_media(site):
     site.mkdir(uploaded_path)
     site.mkdir(os.path.join(uploaded_path, "images"))
     site.mkdir(ext_media_path)
-
-    if not pkg_resources.resource_exists("djblets", "media"):
-        sys.stderr.write("Unable to find a valid Djblets installation.\n")
-        sys.stderr.write("Make sure you've ran `python setup.py develop` "
-                         "in the Djblets source tree.\n")
-        sys.exit(1)
-
-    print "Using Djblets media from %s" % \
-        pkg_resources.resource_filename("djblets", "media")
-
-    site.link_pkg_dir("djblets", "media",
-                      os.path.join(site.install_dir, media_path, "djblets"))
 
 
 def build_egg_info():
@@ -115,13 +106,15 @@ def main():
                          "directory\n")
         sys.exit(1)
 
-
     # Insert the current directory first in the module path so we find the
     # correct reviewboard package.
     sys.path.insert(0, os.getcwd())
-    from reviewboard.cmdline.rbsite import Site
+    from reviewboard.cmdline.rbsite import Site, ConsoleUI
 
     parse_options(sys.argv[1:])
+
+    import reviewboard.cmdline.rbsite
+    reviewboard.cmdline.rbsite.ui = ConsoleUI()
 
     # Re-use the Site class, since it has some useful functions.
     site = Site("reviewboard", SiteOptions)
@@ -133,13 +126,13 @@ def main():
         install_media(site)
 
     if options.sync_db:
-        print "Synchronizing database..."
+        print("Synchronizing database...")
         site.abs_install_dir = os.getcwd()
         site.sync_database(allow_input=True)
 
-    print
-    print "Your Review Board tree is ready for development."
-    print
+    print()
+    print("Your Review Board tree is ready for development.")
+    print()
 
 
 if __name__ == "__main__":

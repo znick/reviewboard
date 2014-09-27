@@ -1,3 +1,5 @@
+from __future__ import unicode_literals
+
 from django import template
 from django.contrib.sites.models import Site
 from django.contrib.auth.models import User
@@ -7,6 +9,8 @@ from djblets.util.decorators import basictag
 
 from reviewboard import get_version_string
 from reviewboard.admin.cache_stats import get_has_cache_stats
+from reviewboard.hostingsvcs.models import HostingServiceAccount
+from reviewboard.notifications.models import WebHookTarget
 from reviewboard.reviews.models import DefaultReviewer, Group
 from reviewboard.scmtools.models import Repository
 from reviewboard.site.urlresolvers import local_site_reverse
@@ -66,6 +70,8 @@ def admin_actions(context):
             'count_default_reviewers': DefaultReviewer.objects.count(),
             'count_repository': Repository.objects.accessible(
                 request.user, visible_only=False).count(),
+            'count_webhooks': WebHookTarget.objects.count(),
+            'count_hosting_accounts': HostingServiceAccount.objects.count(),
             'has_cache_stats': get_has_cache_stats(),
             'version': get_version_string(),
         }

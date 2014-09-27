@@ -1,15 +1,11 @@
+from __future__ import unicode_literals
+
 import logging
 import os
 import re
-import urlparse
 
-# Python 2.5+ provides urllib2.quote, whereas Python 2.4 only
-# provides urllib.quote.
-try:
-    from urllib2 import quote as urllib_quote
-except ImportError:
-    from urllib import quote as urllib_quote
-
+from django.utils import six
+from django.utils.six.moves.urllib.parse import quote as urlquote
 from django.utils.translation import ugettext_lazy as _
 from djblets.util.filesystem import is_exe_in_path
 
@@ -26,8 +22,19 @@ GIT_DIFF_EMPTY_CHANGESET_SIZE = 3
 GIT_DIFF_PREFIX = re.compile('^[ab]/')
 
 
+try:
+    import urlparse
+    uses_netloc = urlparse.uses_netloc
+    urllib_urlparse = urlparse.urlparse
+except ImportError:
+    import urllib.parse
+    uses_netloc = urllib.parse.uses_netloc
+    urllib_urlparse = urllib.parse.urlparse
+
+
 # Register these URI schemes so we can handle them properly.
-urlparse.uses_netloc.append('git')
+uses_netloc.append('git')
+
 
 sshutils.register_rbssh('GIT_SSH')
 
@@ -38,8 +45,9 @@ class ShortSHA1Error(InvalidRevisionFormatError):
             self,
             path=path,
             revision=revision,
-            detail='The SHA1 is too short. Make sure the diff is generated '
-                   'with `git diff --full-index`.',
+            detail=six.text_type(_('The SHA1 is too short. Make sure the diff '
+                                   'is generated with `git diff '
+                                   '--full-index`.')),
             *args, **kwargs)
 
 
@@ -53,9 +61,9 @@ class GitTool(SCMTool):
     supports_raw_file_urls = True
     supports_authentication = True
     field_help_text = {
-        'path': 'For local Git repositories, this should be the path to a '
-                '.git directory that Review Board can read from. For remote '
-                'Git repositories, it should be the clone URL.',
+        'path': _('For local Git repositories, this should be the path to a '
+                  '.git directory that Review Board can read from. For remote '
+                  'Git repositories, it should be the clone URL.'),
     }
     dependencies = {
         'executables': ['git']
@@ -69,8 +77,11 @@ class GitTool(SCMTool):
         if repository.local_site:
             local_site_name = repository.local_site.name
 
+        credentials = repository.get_credentials()
+
         self.client = GitClient(repository.path, repository.raw_file_url,
-                                repository.username, repository.password,
+                                credentials['username'],
+                                credentials['password'],
                                 repository.encoding, local_site_name)
 
     def get_file(self, path, revision=HEAD):
@@ -89,12 +100,13 @@ class GitTool(SCMTool):
             return False
 
     def parse_diff_revision(self, file_str, revision_str, moved=False,
-                            *args, **kwargs):
+                            copied=False, *args, **kwargs):
         revision = revision_str
 
         if file_str == "/dev/null":
             revision = PRE_CREATION
-        elif revision != PRE_CREATION and not moved and revision != '':
+        elif (revision != PRE_CREATION and
+              (not (moved or copied) or revision != '')):
             # Moved files with no changes has no revision,
             # so don't validate those.
             self.client.validate_sha1_format(file_str, revision)
@@ -139,7 +151,7 @@ class GitDiffParser(DiffParser):
     """
     This class is able to parse diffs created with Git
     """
-    pre_creation_regexp = re.compile("^0+$")
+    pre_creation_regexp = re.compile(b"^0+$")
 
     def parse(self):
         """
@@ -148,7 +160,7 @@ class GitDiffParser(DiffParser):
         """
         self.files = []
         i = 0
-        preamble = ''
+        preamble = b''
 
         while i < len(self.lines):
             next_i, file_info, new_diff = self._parse_diff(i)
@@ -158,17 +170,21 @@ class GitDiffParser(DiffParser):
 
                 if preamble:
                     file_info.data = preamble + file_info.data
-                    preamble = ''
+                    preamble = b''
 
                 self.files.append(file_info)
             elif new_diff:
                 # We found a diff, but it was empty and has no file entry.
                 # Reset the preamble.
-                preamble = ''
+                preamble = b''
             else:
-                preamble += self.lines[i] + '\n'
+                preamble += self.lines[i] + b'\n'
 
             i = next_i
+
+        if not self.files and preamble.strip() != b'':
+            # This is probably not an actual git diff file.
+            raise DiffParserError('This does not appear to be a git diff', 0)
 
         return self.files
 
@@ -179,7 +195,7 @@ class GitDiffParser(DiffParser):
         (if any), and whether or not we've found a file (even if we decided
         not to record it).
         """
-        if self.lines[linenum].startswith("diff --git"):
+        if self.lines[linenum].startswith(b"diff --git"):
             parts = self._parse_git_diff(linenum)
 
             return parts[0], parts[1], True
@@ -194,43 +210,55 @@ class GitDiffParser(DiffParser):
 
         # Now we have a diff we are going to use so get the filenames + commits
         file_info = File()
-        file_info.data = self.lines[linenum] + "\n"
+        file_info.data = self.lines[linenum] + b"\n"
         file_info.binary = False
         diff_line = self.lines[linenum].split()
 
         try:
             # Need to remove the "a/" and "b/" prefix
-            file_info.origFile = GIT_DIFF_PREFIX.sub("", diff_line[-2])
-            file_info.newFile = GIT_DIFF_PREFIX.sub("", diff_line[-1])
+            file_info.origFile = GIT_DIFF_PREFIX.sub(b"", diff_line[-2])
+            file_info.newFile = GIT_DIFF_PREFIX.sub(b"", diff_line[-1])
+
+            if isinstance(file_info.origFile, six.binary_type):
+                file_info.origFile = file_info.origFile.decode('utf-8')
+
+            if isinstance(file_info.newFile, six.binary_type):
+                file_info.newFile = file_info.newFile.decode('utf-8')
         except ValueError:
             raise DiffParserError('The diff file is missing revision '
                                   'information', linenum)
 
         linenum += 1
 
-        # Parse the extended header to save the new file, deleted file,
-        # mode change, file move, and index.
-        if self._is_new_file(linenum):
-            file_info.data += self.lines[linenum] + "\n"
-            linenum += 1
-        elif self._is_deleted_file(linenum):
-            file_info.data += self.lines[linenum] + "\n"
-            linenum += 1
-            file_info.deleted = True
-        elif self._is_mode_change(linenum):
-            file_info.data += self.lines[linenum] + "\n"
-            file_info.data += self.lines[linenum + 1] + "\n"
-            linenum += 2
-        elif self._is_moved_file(linenum):
-            file_info.data += self.lines[linenum] + "\n"
-            file_info.data += self.lines[linenum + 1] + "\n"
-            file_info.data += self.lines[linenum + 2] + "\n"
-            linenum += 3
-            file_info.moved = True
-
         # Check to make sure we haven't reached the end of the diff.
         if linenum >= len(self.lines):
             return linenum, None
+
+        # Parse the extended header to save the new file, deleted file,
+        # mode change, file move, and index.
+        if self._is_new_file(linenum):
+            file_info.data += self.lines[linenum] + b"\n"
+            linenum += 1
+        elif self._is_deleted_file(linenum):
+            file_info.data += self.lines[linenum] + b"\n"
+            linenum += 1
+            file_info.deleted = True
+        elif self._is_mode_change(linenum):
+            file_info.data += self.lines[linenum] + b"\n"
+            file_info.data += self.lines[linenum + 1] + b"\n"
+            linenum += 2
+        elif self._is_moved_file(linenum):
+            file_info.data += self.lines[linenum] + b"\n"
+            file_info.data += self.lines[linenum + 1] + b"\n"
+            file_info.data += self.lines[linenum + 2] + b"\n"
+            linenum += 3
+            file_info.moved = True
+        elif self._is_copied_file(linenum):
+            file_info.data += self.lines[linenum] + b"\n"
+            file_info.data += self.lines[linenum + 1] + b"\n"
+            file_info.data += self.lines[linenum + 2] + b"\n"
+            linenum += 3
+            file_info.copied = True
 
         # Assume by default that the change is empty. If we find content
         # later, we'll clear this.
@@ -245,7 +273,7 @@ class GitDiffParser(DiffParser):
             if self.pre_creation_regexp.match(file_info.origInfo):
                 file_info.origInfo = PRE_CREATION
 
-            file_info.data += self.lines[linenum] + "\n"
+            file_info.data += self.lines[linenum] + b"\n"
             linenum += 1
 
         # Get the changes
@@ -254,22 +282,27 @@ class GitDiffParser(DiffParser):
                 break
             elif self._is_binary_patch(linenum):
                 file_info.binary = True
-                file_info.data += self.lines[linenum] + "\n"
+                file_info.data += self.lines[linenum] + b"\n"
                 empty_change = False
                 linenum += 1
                 break
             elif self._is_diff_fromfile_line(linenum):
-                if self.lines[linenum].split()[1] == "/dev/null":
+                if self.lines[linenum].split()[1] == b"/dev/null":
                     file_info.origInfo = PRE_CREATION
 
-                file_info.data += self.lines[linenum] + '\n'
-                file_info.data += self.lines[linenum + 1] + '\n'
+                file_info.data += self.lines[linenum] + b'\n'
+                file_info.data += self.lines[linenum + 1] + b'\n'
                 linenum += 2
             else:
                 empty_change = False
                 linenum = self.parse_diff_line(linenum, file_info)
 
-        if empty_change:
+        # For an empty change, we keep the file's info only if it is a new
+        # 0-length file, a moved file, a copied file, or a deleted 0-length
+        # file.
+        if (empty_change and
+            file_info.origInfo != PRE_CREATION and
+            not (file_info.moved or file_info.copied or file_info.deleted)):
             # We didn't find any interesting content, so leave out this
             # file's info.
             #
@@ -281,47 +314,52 @@ class GitDiffParser(DiffParser):
         return linenum, file_info
 
     def _is_new_file(self, linenum):
-        return self.lines[linenum].startswith("new file mode")
+        return self.lines[linenum].startswith(b"new file mode")
 
     def _is_deleted_file(self, linenum):
-        return self.lines[linenum].startswith("deleted file mode")
+        return self.lines[linenum].startswith(b"deleted file mode")
 
     def _is_mode_change(self, linenum):
-        return (self.lines[linenum].startswith("old mode")
-                and self.lines[linenum + 1].startswith("new mode"))
+        return (self.lines[linenum].startswith(b"old mode")
+                and self.lines[linenum + 1].startswith(b"new mode"))
+
+    def _is_copied_file(self, linenum):
+        return (self.lines[linenum].startswith(b'similarity index') and
+                self.lines[linenum + 1].startswith(b'copy from') and
+                self.lines[linenum + 2].startswith(b'copy to'))
 
     def _is_moved_file(self, linenum):
-        return (self.lines[linenum].startswith("similarity index") and
-                self.lines[linenum + 1].startswith("rename from") and
-                self.lines[linenum + 2].startswith("rename to"))
+        return (self.lines[linenum].startswith(b"similarity index") and
+                self.lines[linenum + 1].startswith(b"rename from") and
+                self.lines[linenum + 2].startswith(b"rename to"))
 
     def _is_index_range_line(self, linenum):
         return (linenum < len(self.lines) and
-                self.lines[linenum].startswith("index "))
+                self.lines[linenum].startswith(b"index "))
 
     def _is_git_diff(self, linenum):
-        return self.lines[linenum].startswith('diff --git')
+        return self.lines[linenum].startswith(b'diff --git')
 
     def _is_binary_patch(self, linenum):
         line = self.lines[linenum]
 
-        return (line.startswith("Binary file") or
-                line.startswith("GIT binary patch"))
+        return (line.startswith(b"Binary file") or
+                line.startswith(b"GIT binary patch"))
 
     def _is_diff_fromfile_line(self, linenum):
         return (linenum + 1 < len(self.lines) and
-                (self.lines[linenum].startswith('--- ') and
-                    self.lines[linenum + 1].startswith('+++ ')))
+                (self.lines[linenum].startswith(b'--- ') and
+                    self.lines[linenum + 1].startswith(b'+++ ')))
 
     def _ensure_file_has_required_fields(self, file_info):
-        """
-        This is needed so that there aren't explosions higher up
-        the chain when the web layer is expecting a string object.
+        """Make sure that the file object has all expected fields.
 
+        This is needed so that there aren't explosions higher up the chain when
+        the web layer is expecting a string object.
         """
         for attr in ('origInfo', 'newInfo', 'data'):
             if getattr(file_info, attr) is None:
-                setattr(file_info, attr, '')
+                setattr(file_info, attr, b'')
 
 
 class GitClient(SCMClient):
@@ -347,7 +385,7 @@ class GitClient(SCMClient):
         self.local_site_name = local_site_name
         self.git_dir = None
 
-        url_parts = urlparse.urlparse(self.path)
+        url_parts = urllib_urlparse(self.path)
 
         if url_parts[0] == 'file':
             self.git_dir = url_parts[2]
@@ -416,7 +454,7 @@ class GitClient(SCMClient):
     def _build_raw_url(self, path, revision):
         url = self.raw_file_url
         url = url.replace("<revision>", revision)
-        url = url.replace("<filename>", urllib_quote(path))
+        url = url.replace("<filename>", urlquote(path))
         return url
 
     def _cat_file(self, path, revision, option):
@@ -435,7 +473,7 @@ class GitClient(SCMClient):
         p = self._run_git(['--git-dir=%s' % self.git_dir, 'cat-file',
                            option, commit])
         contents = p.stdout.read()
-        errmsg = p.stderr.read()
+        errmsg = six.text_type(p.stderr.read())
         failure = p.wait()
 
         if failure:
@@ -449,16 +487,17 @@ class GitClient(SCMClient):
     def _resolve_head(self, revision, path):
         if revision == HEAD:
             if path == "":
-                raise SCMError("path must be supplied if revision is %s" % HEAD)
+                raise SCMError("path must be supplied if revision is %s"
+                               % HEAD)
             return "HEAD:%s" % path
         else:
-            return str(revision)
+            return six.text_type(revision)
 
     def _normalize_git_url(self, path):
         if path.startswith('file://'):
             return path
 
-        url_parts = urlparse.urlparse(path)
+        url_parts = urllib_urlparse(path)
         scheme = url_parts[0]
         netloc = url_parts[1]
 

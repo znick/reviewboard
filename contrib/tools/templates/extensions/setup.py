@@ -1,4 +1,6 @@
-from setuptools import setup
+from __future__ import unicode_literals
+
+from reviewboard.extensions.packaging import setup
 
 
 PACKAGE = "{{extension_name}}"
@@ -16,11 +18,8 @@ setup(
     },
     package_data={
         '{{package_name}}': [
-            'htdocs/css/*.css',
-            'htdocs/js/*.js',
             'templates/{{package_name}}/*.txt',
             'templates/{{package_name}}/*.html',
         ],
     }
 )
-

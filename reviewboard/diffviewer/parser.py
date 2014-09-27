@@ -1,5 +1,10 @@
+from __future__ import unicode_literals
+
 import logging
 import re
+
+from django.utils import six
+from django.utils.six.moves import range
 
 from reviewboard.diffviewer.errors import DiffParserError
 
@@ -15,6 +20,7 @@ class File(object):
         self.binary = False
         self.deleted = False
         self.moved = False
+        self.copied = False
         self.insert_count = 0
         self.delete_count = 0
 
@@ -25,7 +31,7 @@ class DiffParser(object):
     present in certain types of diffs.
     """
 
-    INDEX_SEP = "=" * 67
+    INDEX_SEP = b"=" * 67
 
     def __init__(self, data):
         self.data = data
@@ -39,7 +45,7 @@ class DiffParser(object):
         logging.debug("DiffParser.parse: Beginning parse of diff, size = %s",
                       len(self.data))
 
-        preamble = ''
+        preamble = b''
         self.files = []
         file = None
         i = 0
@@ -52,14 +58,14 @@ class DiffParser(object):
                 # This line is the start of a new file diff.
                 file = new_file
                 file.data = preamble + file.data
-                preamble = ''
+                preamble = b''
                 self.files.append(file)
                 i = next_linenum
             else:
                 if file:
                     i = self.parse_diff_line(i, file)
                 else:
-                    preamble += self.lines[i] + '\n'
+                    preamble += self.lines[i] + b'\n'
                     i += 1
 
         logging.debug("DiffParser.parse: Finished parsing diff.")
@@ -70,12 +76,12 @@ class DiffParser(object):
         line = self.lines[linenum]
 
         if info.origFile is not None and info.newFile is not None:
-            if line.startswith('-'):
+            if line.startswith(b'-'):
                 info.delete_count += 1
-            elif line.startswith('+'):
+            elif line.startswith(b'+'):
                 info.insert_count += 1
 
-        info.data += line + '\n'
+        info.data += line + b'\n'
 
         return linenum + 1
 
@@ -96,7 +102,7 @@ class DiffParser(object):
         # If we have enough information to represent a header, build the
         # file to return.
         if ('origFile' in info and 'newFile' in info and
-                'origInfo' in info and 'newInfo' in info):
+            'origInfo' in info and 'newInfo' in info):
             if linenum < len(self.lines):
                 linenum = self.parse_after_headers(linenum, info)
 
@@ -107,16 +113,29 @@ class DiffParser(object):
             file.binary          = info.get('binary', False)
             file.deleted         = info.get('deleted', False)
             file.moved           = info.get('moved', False)
+            file.copied          = info.get('copied', False)
             file.origFile        = info.get('origFile')
             file.newFile         = info.get('newFile')
             file.origInfo        = info.get('origInfo')
             file.newInfo         = info.get('newInfo')
             file.origChangesetId = info.get('origChangesetId')
 
+            if isinstance(file.origFile, six.binary_type):
+                file.origFile = file.origFile.decode('utf-8')
+
+            if isinstance(file.newFile, six.binary_type):
+                file.newFile = file.newFile.decode('utf-8')
+
+            if isinstance(file.origInfo, six.binary_type):
+                file.origInfo = file.origInfo.decode('utf-8')
+
+            if isinstance(file.newInfo, six.binary_type):
+                file.newInfo = file.newInfo.decode('utf-8')
+
             # The header is part of the diff, so make sure it gets in the
             # diff content.
-            file.data = ''.join([
-                self.lines[i] + '\n' for i in xrange(start, linenum)
+            file.data = b''.join([
+                self.lines[i] + b'\n' for i in range(start, linenum)
             ])
 
         return linenum, file
@@ -131,12 +150,12 @@ class DiffParser(object):
         which can be multiple lines long.
         """
         if linenum + 1 < len(self.lines) and \
-           self.lines[linenum].startswith("Index: ") and \
+           self.lines[linenum].startswith(b"Index: ") and \
            self.lines[linenum + 1] == self.INDEX_SEP:
             # This is an Index: header, which is common in CVS and Subversion,
             # amongst other systems.
             try:
-                info['index'] = self.lines[linenum].split(None, 2)[1]
+                info['index'] = self.lines[linenum].split(None, 1)[1]
             except ValueError:
                 raise DiffParserError("Malformed Index line", linenum)
             linenum += 2
@@ -152,11 +171,11 @@ class DiffParser(object):
         which can be multiple lines long.
         """
         if linenum + 1 < len(self.lines) and \
-           ((self.lines[linenum].startswith('--- ') and
-             self.lines[linenum + 1].startswith('+++ ')) or
-            (self.lines[linenum].startswith('*** ') and
-             self.lines[linenum + 1].startswith('--- ') and
-             not self.lines[linenum].endswith(" ****"))):
+           ((self.lines[linenum].startswith(b'--- ') and
+             self.lines[linenum + 1].startswith(b'+++ ')) or
+            (self.lines[linenum].startswith(b'*** ') and
+             self.lines[linenum + 1].startswith(b'--- ') and
+             not self.lines[linenum].endswith(b" ****"))):
             # This is a unified or context diff header. Parse the
             # file and extra info.
             try:
@@ -184,17 +203,17 @@ class DiffParser(object):
         return linenum
 
     def parse_filename_header(self, s, linenum):
-        if "\t" in s:
+        if b"\t" in s:
             # There's a \t separating the filename and info. This is the
             # best case scenario, since it allows for filenames with spaces
             # without much work.
-            return s.split("\t", 1)
+            return s.split(b"\t", 1)
 
         # There's spaces being used to separate the filename and info.
         # This is technically wrong, so all we can do is assume that
         # 1) the filename won't have multiple consecutive spaces, and
         # 2) there's at least 2 spaces separating the filename and info.
-        if "  " in s:
+        if b"  " in s:
             return re.split(r"  +", s, 1)
 
         raise DiffParserError("No valid separator after the filename was " +
@@ -206,7 +225,7 @@ class DiffParser(object):
 
         The returned diff as composed of all FileDiffs in the provided diffset.
         """
-        return ''.join([filediff.diff for filediff in diffset.files.all()])
+        return b''.join([filediff.diff for filediff in diffset.files.all()])
 
     def get_orig_commit_id(self):
         """Returns the commit ID of the original revision for the diff.
@@ -215,3 +234,14 @@ class DiffParser(object):
         revision IDs.
         """
         return None
+
+    def normalize_diff_filename(self, filename):
+        """Normalize filenames in diffs.
+
+        This strips off any leading slashes, which might occur due to
+        differences in various diffing methods or APIs.
+        """
+        if filename.startswith('/'):
+            return filename[1:]
+        else:
+            return filename

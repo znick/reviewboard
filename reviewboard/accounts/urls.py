@@ -1,5 +1,9 @@
-from django.conf import settings
-from django.conf.urls.defaults import patterns, url
+from __future__ import unicode_literals
+
+from django.conf.urls import patterns, url
+
+from reviewboard.accounts.forms.auth import AuthenticationForm
+from reviewboard.accounts.views import MyAccountView
 
 
 urlpatterns = patterns(
@@ -7,20 +11,21 @@ urlpatterns = patterns(
 
     url(r'^register/$', 'account_register',
         {'next_url': 'dashboard'}, name="register"),
-    url(r'^preferences/$', 'user_preferences', name="user-preferences"),
-)
-
-urlpatterns += patterns(
-    "djblets.auth.views",
-
-    url(r'^login/$',
-        'login',
-        {'next_page': settings.SITE_ROOT + 'dashboard/'},
-        name="login"),
+    url(r'^preferences/$',
+        MyAccountView.as_view(),
+        name="user-preferences"),
 )
 
 urlpatterns += patterns(
     "django.contrib.auth.views",
+
+    url(r'^login/$', 'login',
+        {
+            'template_name': 'accounts/login.html',
+            'authentication_form': AuthenticationForm,
+        },
+        name='login'),
+    url(r'^logout/$', 'logout_then_login', name='logout'),
 
     url(r'^recover/$',
         'password_reset',
@@ -31,12 +36,14 @@ urlpatterns += patterns(
         name='recover'),
     url(r'^recover/done/$',
         'password_reset_done',
-        {'template_name': 'accounts/password_reset_done.html'}),
-    url(r'^reset/(?P<uidb36>[0-9A-Za-z]+)-(?P<token>.+)/$',
+        {'template_name': 'accounts/password_reset_done.html'},
+        name='password_reset_done'),
+    url(r'^reset/(?P<uidb64>[0-9A-Za-z_\-]+)/(?P<token>[0-9A-Za-z]{1,13}-[0-9A-Za-z]{1,20})/$',
         'password_reset_confirm',
         {'template_name': 'accounts/password_reset_confirm.html'},
-        name='password-reset-confirm'),
+        name='password_reset_confirm'),
     url(r'^reset/done/$',
         'password_reset_complete',
-        {'template_name': 'accounts/password_reset_complete.html'}),
+        {'template_name': 'accounts/password_reset_complete.html'},
+        name='password_reset_complete'),
 )

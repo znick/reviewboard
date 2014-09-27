@@ -23,11 +23,15 @@
 # SOFTWARE OR THE USE OR OTHER DEALINGS IN THE SOFTWARE.
 #
 
+from __future__ import unicode_literals
+
 from django.contrib.auth.models import User
 from django.db import models
+from django.utils.encoding import python_2_unicode_compatible
 from django.utils.translation import ugettext_lazy as _
 
 
+@python_2_unicode_compatible
 class LocalSite(models.Model):
     """
     A division within a Review Board installation.
@@ -37,12 +41,17 @@ class LocalSite(models.Model):
     as admins (which allows them to manipulate the repositories, groups and
     users in the site).
 
-    Pretty much every other model in this module can all be assigned to a single
-    LocalSite, at which point only members will be able to see or manipulate
-    these objects. Access control is performed at every level, and consistency
-    is enforced through a liberal sprinkling of assertions and unit tests.
+    Pretty much every other model in this module can all be assigned to a
+    single LocalSite, at which point only members will be able to see or
+    manipulate these objects. Access control is performed at every level, and
+    consistency is enforced through a liberal sprinkling of assertions and unit
+    tests.
     """
     name = models.SlugField(_('name'), max_length=32, blank=False, unique=True)
+    public = models.BooleanField(
+        default=False,
+        help_text=_('Allow people outside the team to access and post '
+                    'review requests and reviews.'))
     users = models.ManyToManyField(User, blank=True,
                                    related_name='local_site')
     admins = models.ManyToManyField(User, blank=True,
@@ -54,8 +63,9 @@ class LocalSite(models.Model):
         This checks that the user is logged in, and that they're listed in the
         'users' field.
         """
-        return (user.is_authenticated() and
-                (user.is_staff or self.users.filter(pk=user.pk).exists()))
+        return (self.public or
+                (user.is_authenticated() and
+                 (user.is_staff or self.users.filter(pk=user.pk).exists())))
 
     def is_mutable_by(self, user, perm='site.change_localsite'):
         """Returns whether or not a user can modify settings in a LocalSite.
@@ -69,5 +79,5 @@ class LocalSite(models.Model):
         """
         return user.has_perm(perm) or self.admins.filter(pk=user.pk).exists()
 
-    def __unicode__(self):
+    def __str__(self):
         return self.name

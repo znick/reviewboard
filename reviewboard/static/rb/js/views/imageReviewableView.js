@@ -102,10 +102,6 @@ BaseImageView = Backbone.View.extend({
          */
         offset.left += $region.getExtents('m', 'l');
 
-        if ($.browser.msie && $.browser.version === 6) {
-            offset.left -= this.getExtents('mp', 'l');
-        }
-
         return {
             left: offset.left,
             top: offset.top,
@@ -174,7 +170,7 @@ ImageDifferenceDiffView = BaseImageView.extend({
      * Initializes the view.
      */
     initialize: function() {
-        _.super(this).initialize.call(this);
+        _super(this).initialize.call(this);
 
         this._origImage = null;
         this._modifiedImage = null;
@@ -283,7 +279,7 @@ ImageOnionDiffView = BaseImageView.extend({
      * Initializes the view.
      */
     initialize: function() {
-        _.super(this).initialize.call(this);
+        _super(this).initialize.call(this);
 
         this._$origImage = null;
         this._$modifiedImage = null;
@@ -296,7 +292,7 @@ ImageOnionDiffView = BaseImageView.extend({
      * This will set up the slider and set it to a default of 25% opacity.
      */
     render: function() {
-        _.super(this).render.call(this);
+        _super(this).render.call(this);
 
         this.$commentRegion = this.$('.image-containers');
         this._$origImage = this.$('.orig-image img');
@@ -386,7 +382,7 @@ ImageSplitDiffView = BaseImageView.extend({
      * Initializes the view.
      */
     initialize: function() {
-        _.super(this).initialize.call(this);
+        _super(this).initialize.call(this);
 
         this._$modifiedImage = null;
         this._$origImage = null;
@@ -402,7 +398,7 @@ ImageSplitDiffView = BaseImageView.extend({
      * This will set up the slider and set it to a default of 25%.
      */
     render: function() {
-        _.super(this).render.call(this);
+        _super(this).render.call(this);
 
         this.$commentRegion = this.$('.image-containers');
         this._$origImage = this.$('.orig-image img');
@@ -445,7 +441,6 @@ ImageSplitDiffView = BaseImageView.extend({
             origHeight = this._$origImage.height(),
             modifiedWidth = this._$modifiedImage.outerWidth(),
             modifiedHeight = this._$modifiedImage.height(),
-            maxWidth = Math.max(origWidth, modifiedWidth),
             maxHeight = Math.max(origHeight, modifiedHeight),
             maxOuterHeight = maxHeight +
                              $origImageContainer.getExtents('b', 'tb');
@@ -507,7 +502,7 @@ ImageTwoUpDiffView = BaseImageView.extend({
      * Renders the view.
      */
     render: function() {
-        _.super(this).render.call(this);
+        _super(this).render.call(this);
 
         this.$commentRegion = this.$('.modified-image img');
 
@@ -551,8 +546,9 @@ RB.ImageReviewableView = RB.FileAttachmentReviewableView.extend({
     /*
      * Initializes the view.
      */
-    initialize: function() {
-        RB.AbstractReviewableView.prototype.initialize.call(this);
+    initialize: function(options) {
+        RB.FileAttachmentReviewableView.prototype.initialize.call(
+            this, options);
 
         _.bindAll(this, '_adjustPos');
 
@@ -590,6 +586,11 @@ RB.ImageReviewableView = RB.FileAttachmentReviewableView.extend({
             .prependTo(this._$selectionArea)
             .proxyTouchEvents()
             .hide();
+
+        if (!this.renderedInline) {
+            this.$el.append(
+                $('<h1 class="caption"/>').text(this.model.get('caption')));
+        }
 
         this.$el
             /*
@@ -759,7 +760,7 @@ RB.ImageReviewableView = RB.FileAttachmentReviewableView.extend({
         e.preventDefault();
         e.stopPropagation();
 
-        this._setDiffMode($(e.srcElement).data('mode'));
+        this._setDiffMode($(e.target).data('mode'));
     },
 
     /*

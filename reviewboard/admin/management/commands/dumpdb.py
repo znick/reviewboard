@@ -1,4 +1,4 @@
-import sys
+from __future__ import unicode_literals
 
 from django.core import serializers
 from django.core.management.base import NoArgsCommand
@@ -25,9 +25,9 @@ class Command(NoArgsCommand):
         prev_pct = -1
         i = 0
 
-        sys.stderr.write("Dump the database. This may take a while...\n")
+        self.stderr.write("Dump the database. This may take a while...\n")
 
-        print "# dbdump v1 - %s objects" % totalobjs
+        self.stdout.write("# dbdump v1 - %s objects" % totalobjs)
 
         for model in models:
             count = model.objects.count()
@@ -38,15 +38,15 @@ class Command(NoArgsCommand):
                     value = serializer.serialize([obj])
 
                     if value != "[]":
-                        print value[1:-1]  # Skip the "[" and "]"
+                        self.stdout.write(value[1:-1])  # Skip the "[" and "]"
 
                     i += 1
                     pct = i * 100 / totalobjs
                     if pct != prev_pct:
-                        sys.stderr.write("  [%s%%]\r" % pct)
-                        sys.stderr.flush()
+                        self.stderr.write("  [%s%%]\r" % pct)
+                        self.stderr.flush()
                         prev_pct = pct
 
                 j += OBJECT_LIMIT
 
-        sys.stderr.write("\nDone.\n")
+        self.stderr.write("\nDone.\n")

@@ -1,3 +1,5 @@
+from __future__ import unicode_literals
+
 import mimeparse
 import os
 
@@ -6,8 +8,8 @@ from django.contrib.auth.models import User
 from django.core.cache import cache
 from django.core.files.uploadedfile import SimpleUploadedFile
 from djblets.testing.decorators import add_fixtures
-from djblets.testing.testcases import TestCase
 
+from reviewboard import initialize
 from reviewboard.attachments.forms import UploadFileForm
 from reviewboard.attachments.mimetypes import (MimetypeHandler,
                                                register_mimetype_handler,
@@ -16,10 +18,13 @@ from reviewboard.attachments.models import FileAttachment
 from reviewboard.diffviewer.models import DiffSet, DiffSetHistory, FileDiff
 from reviewboard.reviews.models import ReviewRequest
 from reviewboard.scmtools.core import PRE_CREATION
-from reviewboard.scmtools.models import Repository
+from reviewboard.testing import TestCase
 
 
 class BaseFileAttachmentTestCase(TestCase):
+    def setUp(self):
+        initialize()
+
     def make_uploaded_file(self):
         filename = os.path.join(settings.STATIC_ROOT,
                                 'rb', 'images', 'trophy.png')
@@ -40,7 +45,7 @@ class BaseFileAttachmentTestCase(TestCase):
             source_revision = '1'
             dest_revision = '2'
 
-        repository = Repository.objects.get(pk=1)
+        repository = self.create_repository()
 
         if not diffset_history:
             diffset_history = DiffSetHistory.objects.create(name='testhistory')
@@ -61,7 +66,7 @@ class BaseFileAttachmentTestCase(TestCase):
 
 
 class FileAttachmentTests(BaseFileAttachmentTestCase):
-    @add_fixtures(['test_users', 'test_reviewrequests', 'test_scmtools'])
+    @add_fixtures(['test_users', 'test_scmtools'])
     def test_upload_file(self):
         """Testing uploading a file attachment"""
         file = self.make_uploaded_file()
@@ -70,7 +75,7 @@ class FileAttachmentTests(BaseFileAttachmentTestCase):
         })
         self.assertTrue(form.is_valid())
 
-        review_request = ReviewRequest.objects.get(pk=1)
+        review_request = self.create_review_request(publish=True)
         file_attachment = form.create(file, review_request)
         self.assertTrue(os.path.basename(file_attachment.file.name).endswith(
             '__trophy.png'))
@@ -85,7 +90,7 @@ class FileAttachmentTests(BaseFileAttachmentTestCase):
     @add_fixtures(['test_scmtools'])
     def test_is_from_diff_with_repository(self):
         """Testing FileAttachment.is_from_diff with repository association"""
-        repository = Repository.objects.get(pk=1)
+        repository = self.create_repository()
         file_attachment = FileAttachment(repository=repository)
 
         self.assertTrue(file_attachment.is_from_diff)
@@ -97,6 +102,37 @@ class FileAttachmentTests(BaseFileAttachmentTestCase):
         file_attachment = FileAttachment(added_in_filediff=filediff)
 
         self.assertTrue(file_attachment.is_from_diff)
+
+    @add_fixtures(['test_users', 'test_scmtools'])
+    def test_utf16_thumbnail(self):
+        """Testing file attachment thumbnail generation for UTF-16 files"""
+        filename = os.path.join(os.path.dirname(__file__),
+                                'testdata', 'utf-16.txt')
+        with open(filename) as f:
+            file = SimpleUploadedFile(f.name, f.read(),
+                                      content_type='text/plain;charset=utf-16le')
+            form = UploadFileForm(files={'path': file})
+            form.is_valid()
+
+            review_request = self.create_review_request(publish=True)
+            file_attachment = form.create(file, review_request)
+
+            self.assertEqual(file_attachment.thumbnail,
+                             '<div class="file-thumbnail-clipped"><pre>'
+                             'UTF-16le encoded sample plain-text file</pre>'
+                             '<pre>\u203e\u203e\u203e\u203e\u203e\u203e'
+                             '\u203e\u203e\u203e\u203e\u203e\u203e\u203e'
+                             '\u203e\u203e\u203e\u203e\u203e\u203e\u203e'
+                             '\u203e\u203e\u203e\u203e\u203e\u203e\u203e'
+                             '\u203e\u203e\u203e\u203e\u203e\u203e\u203e'
+                             '\u203e\u203e\u203e\u203e\u203e</pre><pre>'
+                             '</pre><pre>Markus Kuhn [\u02c8ma\u02b3k\u028as'
+                             ' ku\u02d0n] &lt;http://www.cl.cam.ac.uk/~mgk25/'
+                             '&gt; \u2014 2002-07-25</pre><pre></pre><pre>'
+                             '</pre><pre>The ASCII compatible UTF-8 encoding '
+                             'used in this plain-text file</pre><pre>is '
+                             'defined in Unicode, ISO 10646-1, and RFC 2279.'
+                             '</pre></div>')
 
 
 class MimetypeTest(MimetypeHandler):
@@ -137,6 +173,8 @@ class Test3StarMimetype(MimetypeHandler):
 
 class MimetypeHandlerTests(TestCase):
     def setUp(self):
+        super(MimetypeHandlerTests, self).setUp()
+
         # Register test cases in same order as they are defined
         # in this test
         register_mimetype_handler(MimetypeTest)
@@ -150,6 +188,8 @@ class MimetypeHandlerTests(TestCase):
         register_mimetype_handler(Test3StarMimetype)
 
     def tearDown(self):
+        super(MimetypeHandlerTests, self).tearDown()
+
         # Unregister test cases in same order as they are defined
         # in this test
         unregister_mimetype_handler(MimetypeTest)
@@ -197,7 +237,9 @@ class FileAttachmentManagerTests(BaseFileAttachmentTestCase):
     fixtures = ['test_scmtools']
 
     def test_create_from_filediff_with_new_and_modified_true(self):
-        """Testing FileAttachmentManager.create_from_filediff with new FileDiff and modified=True"""
+        """Testing FileAttachmentManager.create_from_filediff
+        with new FileDiff and modified=True
+        """
         filediff = self.make_filediff(is_new=True)
         self.assertTrue(filediff.is_new)
 
@@ -211,7 +253,9 @@ class FileAttachmentManagerTests(BaseFileAttachmentTestCase):
         self.assertEqual(file_attachment.added_in_filediff, filediff)
 
     def test_create_from_filediff_with_new_and_modified_false(self):
-        """Testing FileAttachmentManager.create_from_filediff with new FileDiff and modified=False"""
+        """Testing FileAttachmentManager.create_from_filediff
+        with new FileDiff and modified=False
+        """
         filediff = self.make_filediff(is_new=True)
         self.assertTrue(filediff.is_new)
 
@@ -224,7 +268,9 @@ class FileAttachmentManagerTests(BaseFileAttachmentTestCase):
             from_modified=False)
 
     def test_create_from_filediff_with_existing_and_modified_true(self):
-        """Testing FileAttachmentManager.create_from_filediff with existing FileDiff and modified=True"""
+        """Testing FileAttachmentManager.create_from_filediff
+        with existing FileDiff and modified=True
+        """
         filediff = self.make_filediff()
         self.assertFalse(filediff.is_new)
 
@@ -239,7 +285,9 @@ class FileAttachmentManagerTests(BaseFileAttachmentTestCase):
         self.assertEqual(file_attachment.added_in_filediff_id, None)
 
     def test_create_from_filediff_with_existing_and_modified_false(self):
-        """Testing FileAttachmentManager.create_from_filediff with existing FileDiff and modified=False"""
+        """Testing FileAttachmentManager.create_from_filediff
+        with existing FileDiff and modified=False
+        """
         filediff = self.make_filediff()
         self.assertFalse(filediff.is_new)
 
@@ -256,7 +304,9 @@ class FileAttachmentManagerTests(BaseFileAttachmentTestCase):
         self.assertEqual(file_attachment.added_in_filediff_id, None)
 
     def test_get_for_filediff_with_new_and_modified_true(self):
-        """Testing FileAttachmentManager.get_for_filediff with new FileDiff and modified=True"""
+        """Testing FileAttachmentManager.get_for_filediff
+        with new FileDiff and modified=True
+        """
         filediff = self.make_filediff(is_new=True)
         self.assertTrue(filediff.is_new)
 
@@ -270,7 +320,9 @@ class FileAttachmentManagerTests(BaseFileAttachmentTestCase):
             file_attachment)
 
     def test_get_for_filediff_with_new_and_modified_false(self):
-        """Testing FileAttachmentManager.get_for_filediff with new FileDiff and modified=False"""
+        """Testing FileAttachmentManager.get_for_filediff
+        with new FileDiff and modified=False
+        """
         filediff = self.make_filediff(is_new=True)
         self.assertTrue(filediff.is_new)
 
@@ -284,7 +336,9 @@ class FileAttachmentManagerTests(BaseFileAttachmentTestCase):
             None)
 
     def test_get_for_filediff_with_existing_and_modified_true(self):
-        """Testing FileAttachmentManager.get_for_filediff with existing FileDiff and modified=True"""
+        """Testing FileAttachmentManager.get_for_filediff
+        with existing FileDiff and modified=True
+        """
         filediff = self.make_filediff()
         self.assertFalse(filediff.is_new)
 
@@ -298,7 +352,9 @@ class FileAttachmentManagerTests(BaseFileAttachmentTestCase):
             file_attachment)
 
     def test_get_for_filediff_with_existing_and_modified_false(self):
-        """Testing FileAttachmentManager.get_for_filediff with existing FileDiff and modified=False"""
+        """Testing FileAttachmentManager.get_for_filediff
+        with existing FileDiff and modified=False
+        """
         filediff = self.make_filediff()
         self.assertFalse(filediff.is_new)
 
@@ -315,10 +371,11 @@ class FileAttachmentManagerTests(BaseFileAttachmentTestCase):
 
 class DiffViewerFileAttachmentTests(BaseFileAttachmentTestCase):
     """Tests for inline diff file attachments in the diff viewer."""
-    fixtures = ['test_users', 'test_reviewrequests', 'test_scmtools',
-                'test_site']
+    fixtures = ['test_users', 'test_scmtools', 'test_site']
 
     def setUp(self):
+        super(DiffViewerFileAttachmentTests, self).setUp()
+
         # The diff viewer's caching breaks the result of these tests,
         # so be sure we clear before each one.
         cache.clear()

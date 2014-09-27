@@ -1,12 +1,16 @@
+from __future__ import unicode_literals
+
 from django.db import models
+from django.utils.encoding import python_2_unicode_compatible
 from django.utils.translation import ugettext_lazy as _
-from djblets.util.fields import JSONField
+from djblets.db.fields import JSONField
 
 from reviewboard.hostingsvcs.managers import HostingServiceAccountManager
 from reviewboard.hostingsvcs.service import get_hosting_service
 from reviewboard.site.models import LocalSite
 
 
+@python_2_unicode_compatible
 class HostingServiceAccount(models.Model):
     service_name = models.CharField(max_length=128)
     hosting_url = models.CharField(max_length=255, blank=True, null=True)
@@ -21,7 +25,7 @@ class HostingServiceAccount(models.Model):
 
     objects = HostingServiceAccountManager()
 
-    def __unicode__(self):
+    def __str__(self):
         return self.username
 
     @property
@@ -58,7 +62,7 @@ class HostingServiceAccount(models.Model):
 
         The acount is mutable by the user if the user is an administrator
         with proper permissions or the account is part of a LocalSite and
-        the user is in the admin list.
+        the user has permissions to modify it.
         """
-        return (user.has_perm('hostingsvcs.change_hostingserviceaccount') or
-                (self.local_site and self.local_site.is_mutable_by(user)))
+        return user.has_perm('hostingsvcs.change_hostingserviceaccount',
+                             self.local_site)

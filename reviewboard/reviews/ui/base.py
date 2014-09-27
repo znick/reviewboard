@@ -1,3 +1,6 @@
+from __future__ import unicode_literals
+
+import json
 import logging
 import os
 from uuid import uuid4
@@ -6,14 +9,14 @@ import mimeparse
 from django.http import HttpResponse
 from django.template.context import RequestContext
 from django.template.loader import render_to_string
-from django.utils import simplejson
+from django.utils import six
 from django.utils.html import escape
 from django.utils.safestring import mark_safe
 
 from reviewboard.attachments.mimetypes import MIMETYPE_EXTENSIONS, score_match
 from reviewboard.diffviewer.models import DiffSet
 from reviewboard.reviews.context import make_review_request_context
-from reviewboard.reviews.models import FileAttachmentComment
+from reviewboard.reviews.models import FileAttachmentComment, Review
 from reviewboard.site.urlresolvers import local_site_reverse
 
 
@@ -30,7 +33,10 @@ class ReviewUI(object):
     allow_inline = False
     supports_diffing = False
 
+    css_bundle_names = []
+    js_bundle_names = []
     js_files = []
+
     js_model_class = None
     js_view_class = None
 
@@ -48,6 +54,21 @@ class ReviewUI(object):
         assert self.supports_diffing
 
         self.diff_against_obj = obj
+
+    def is_enabled_for(self, user=None, review_request=None,
+                       file_attachment=None, **kwargs):
+        """Returns whether the review UI is enabled under the given criteria.
+
+        This can enable or disable a review UI's functionality, both on the
+        file attachment thumbnail and review UI page, depending on the
+        user, review request, file attachment, or some state associated with
+        one or more of those.
+
+        When this is called, the arguments are always passed as keyword
+        arguments. Subclasses don't need to accept all the arguments, as
+        long as they take a **kwargs.
+        """
+        return True
 
     def render_to_response(self, request):
         """Renders the review UI to an HttpResponse.
@@ -72,22 +93,35 @@ class ReviewUI(object):
         """
         self.request = request
 
+        last_activity_time, updated_object = \
+            self.review_request.get_last_activity()
+
         draft = self.review_request.get_draft(request.user)
         review_request_details = draft or self.review_request
+
+        close_description, close_description_rich_text = \
+            self.review_request.get_close_description()
+
         context = {
             'caption': self.get_caption(draft),
+            'close_description': close_description,
+            'close_description_rich_text': close_description_rich_text,
             'comments': self.get_comments(),
             'draft': draft,
+            'last_activity_time': last_activity_time,
             'review_request_details': review_request_details,
             'review_request': self.review_request,
             'review_ui': self,
-            'review_ui_uuid': str(uuid4()),
+            'review_ui_uuid': six.text_type(uuid4()),
             self.object_key: self.obj,
             self.diff_object_key: self.diff_against_obj,
         }
 
         if inline:
-            context['base_template'] = 'reviews/ui/base_inline.html'
+            context.update({
+                'base_template': 'reviews/ui/base_inline.html',
+                'review_ui_inline': True,
+            })
         else:
             if self.review_request.repository_id:
                 diffset_count = DiffSet.objects.filter(
@@ -99,15 +133,17 @@ class ReviewUI(object):
                 'base_template': 'reviews/ui/base.html',
                 'has_diffs': (draft and draft.diffset) or diffset_count > 0,
                 'review': self.review_request.get_pending_review(request.user),
+                'review_ui_inline': False,
             })
+
+        context.update(self.get_extra_context(request))
 
         return render_to_string(
             self.template_name,
             RequestContext(
                 request,
                 make_review_request_context(request, self.review_request,
-                                            context),
-                **self.get_extra_context(request)))
+                                            context)))
 
     def get_comments(self):
         return self.obj.get_comments()
@@ -139,7 +175,7 @@ class ReviewUI(object):
             local_site_name = self.review_request.local_site.name
 
         return local_site_reverse(
-            'file_attachment',
+            'file-attachment',
             local_site_name=local_site_name,
             kwargs={
                 'review_request_id': self.review_request.display_id,
@@ -179,7 +215,7 @@ class ReviewUI(object):
         The result of this can be used directly in a template to provide
         comments to JavaScript functions.
         """
-        return mark_safe(simplejson.dumps(
+        return mark_safe(json.dumps(
             self.serialize_comments(self.get_comments())))
 
     def serialize_comments(self, comments):
@@ -193,7 +229,11 @@ class ReviewUI(object):
         user = self.request.user
 
         for comment in comments:
-            review = comment.get_review()
+            try:
+                review = comment.get_review()
+            except Review.DoesNotExist:
+                logging.error('Missing Review for comment %r' % comment)
+                continue
 
             if review and (review.public or review.user == user):
                 yield self.serialize_comment(comment)
@@ -321,7 +361,7 @@ class FileAttachmentReviewUI(ReviewUI):
             if handler:
                 try:
                     return handler(attachment.get_review_request(), attachment)
-                except Exception, e:
+                except Exception as e:
                     logging.error('Unable to load review UI for %s: %s',
                                   attachment, e, exc_info=1)
 

@@ -1,15 +1,20 @@
+from __future__ import unicode_literals
+
 import os
 
 from django.core.exceptions import ObjectDoesNotExist
 from django.db import models
+from django.utils.encoding import python_2_unicode_compatible
 from django.utils.translation import ugettext_lazy as _
 
+from reviewboard.admin.server import build_server_url
 from reviewboard.attachments.managers import FileAttachmentManager
 from reviewboard.attachments.mimetypes import MimetypeHandler
 from reviewboard.diffviewer.models import FileDiff
 from reviewboard.scmtools.models import Repository
 
 
+@python_2_unicode_compatible
 class FileAttachment(models.Model):
     """A file associated with a review request.
 
@@ -37,7 +42,7 @@ class FileAttachment(models.Model):
                                  blank=True,
                                  null=True)
     repo_revision = models.CharField(_('repository file revision'),
-                                     max_length=512,
+                                     max_length=64,
                                      blank=True,
                                      null=True,
                                      db_index=True)
@@ -104,7 +109,7 @@ class FileAttachment(models.Model):
         return (self.repository_id is not None or
                 self.added_in_filediff_id is not None)
 
-    def __unicode__(self):
+    def __str__(self):
         return self.caption
 
     def get_review_request(self):
@@ -133,4 +138,9 @@ class FileAttachment(models.Model):
         return self._comments
 
     def get_absolute_url(self):
-        return self.file.url
+        url = self.file.url
+
+        if url.startswith('http:') or url.startswith('https:'):
+            return url
+
+        return build_server_url(url)

@@ -1,3 +1,6 @@
+from __future__ import unicode_literals
+
+import logging
 import socket
 
 from django.utils.translation import ugettext as _
@@ -31,8 +34,8 @@ class SSHAuthenticationError(SSHError):
             msg = _('Unable to authenticate against this repository using one '
                     'of the supported authentication types '
                     '(%(allowed_types)s).') % {
-                        'allowed_types': humanize_list(allowed_types),
-                    }
+                'allowed_types': humanize_list(allowed_types),
+            }
         elif not msg:
             msg = _('Unable to authenticate against this repository using one '
                     'of the supported authentication types.')
@@ -76,7 +79,6 @@ class BadHostKeyError(SSHKeyError):
               "certain it's safe!")
             % {
                 'hostname': hostname,
-                'ip_address': socket.gethostbyname(hostname),
             })
         self.expected_key = humanize_key(expected_key)
         self.raw_expected_key = expected_key
@@ -85,11 +87,17 @@ class BadHostKeyError(SSHKeyError):
 class UnknownHostKeyError(SSHKeyError):
     """An error representing an unknown host key for an SSH connection."""
     def __init__(self, hostname, key):
-        SSHKeyError.__init__(
-            self, hostname, key,
-            _("The authenticity of the host '%(hostname)s (%(ip)s)' "
-              "couldn't be determined.") % {
-                  'hostname': hostname,
-                  'ip': socket.gethostbyname(hostname),
-              }
-        )
+        try:
+            ipaddr = socket.gethostbyname(hostname)
+            warning = _("The authenticity of the host '%(hostname)s' (%(ip)s) "
+                        "could not be determined.") % {
+                'hostname': hostname,
+                'ip': ipaddr,
+            }
+        except Exception as e:
+            logging.warning('Failed to find IP for "%s": %s',
+                            hostname, e)
+            warning = _("The authenticity of the host '%(hostname)s' could "
+                        "not be determined.") % {'hostname': hostname}
+
+        SSHKeyError.__init__(self, hostname, key, warning)

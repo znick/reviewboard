@@ -1,7 +1,16 @@
 {% extends base_template %}
-{% load djblets_js %}
+{% load compressed djblets_js %}
+
+{% block review_ui_css %}
+{%  for bundle_name in review_ui.css_bundle_names %}
+{%   compressed_css bundle_name %}
+{%  endfor %}
+{% endblock %}
 
 {% block review_ui_scripts %}
+{%  for bundle_name in review_ui.js_bundle_names %}
+{%   compressed_js bundle_name %}
+{%  endfor %}
 {%  for js_file in review_ui.js_files %}
 <script src="{{js_file}}"></script>
 {%  endfor %}
@@ -11,9 +20,11 @@
         RB.PageManager.ready(function(page) {
 {%  block review_ui_setup %}
             var view = new {{review_ui.js_view_class}}({
+{%   block review_ui_view_params %}{% endblock %}
 {%   for key, value in review_ui.get_js_view_data.items %}
                 {{key|json_dumps}}: {{value|json_dumps}},
 {%   endfor %}
+                renderedInline: {{review_ui_inline|yesno:'true,false'}},
                 model: new {{review_ui.js_model_class}}({
 {%   for key, value in review_ui.get_js_model_data.items %}
                     {{key|json_dumps}}: {{value|json_dumps}},
@@ -34,6 +45,8 @@
 </script>
 {% endblock %}
 
-{% block review_ui_content %}
-<div id="review_ui_{{review_ui_uuid}}"></div>
+{% block review_ui_box_content %}
+<div id="review_ui_{{review_ui_uuid}}">
+{%  block review_ui_box_content_inner %}{% endblock %}
+</div>
 {% endblock %}

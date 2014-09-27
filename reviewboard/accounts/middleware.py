@@ -1,3 +1,5 @@
+from __future__ import unicode_literals
+
 import pytz
 from django.utils import timezone
 
@@ -9,7 +11,7 @@ class TimezoneMiddleware(object):
     def process_request(self, request):
         if request.user.is_authenticated():
             try:
-                user = Profile.objects.get(user=request.user)
+                user = request.user.get_profile()
                 timezone.activate(pytz.timezone(user.timezone))
             except Profile.DoesNotExist:
                 pass

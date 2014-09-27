@@ -1,4 +1,8 @@
-from scmtools.core import FileNotFoundError, SCMTool, HEAD
+from __future__ import unicode_literals
+
+from django.utils import six
+
+from reviewboard.scmtools.core import FileNotFoundError, SCMTool, HEAD
 
 
 class LocalFileTool(SCMTool):
@@ -17,12 +21,10 @@ class LocalFileTool(SCMTool):
             raise FileNotFoundError(path, revision)
 
         try:
-            fp = open(self.repopath + '/' + path, 'r')
-            data = fp.read()
-            fp.close()
-            return data
-        except IOError, e:
-            raise FileNotFoundError(path, revision, detail=str(e))
+            with open(self.repopath + '/' + path, 'rb') as f:
+                return f.read()
+        except IOError as e:
+            raise FileNotFoundError(path, revision, detail=six.text_type(e))
 
     def parse_diff_revision(self, file_str, revision_str, *args, **kwargs):
         return file_str, HEAD

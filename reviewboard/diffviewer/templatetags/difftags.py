@@ -1,3 +1,5 @@
+from __future__ import unicode_literals
+
 import re
 
 from django import template
@@ -14,44 +16,8 @@ register = template.Library()
 
 
 @register.filter
-def revision_link_list(history, current_pair):
-    """
-    Returns a list of revisions in the specified diffset history, indicating
-    which of the revisions is already selected, as determined by the current
-    diffset pair.
-    """
-    for diffset in history.diffsets.all():
-        yield {
-            'revision': diffset.revision,
-            'is_current': (current_pair[0] == diffset and
-                           current_pair[1] is None)
-        }
-
-
-@register.filter
-def interdiff_link_list(history, current_pair):
-    """
-    Returns a list of revisions in the specified diffset history based on
-    the passed interdiff pair.
-    """
-    for diffset in history.diffsets.all():
-        if current_pair[0].revision < diffset.revision:
-            path = "%s-%s" % (current_pair[0].revision, diffset.revision)
-        else:
-            path = "%s-%s" % (diffset.revision, current_pair[0].revision)
-
-        yield {
-            'revision': diffset.revision,
-            'path': path,
-            'is_current': (current_pair[0] == diffset or
-                           current_pair[1] == diffset)
-        }
-
-
-@register.filter
 def highlightregion(value, regions):
-    """
-    Highlights the specified regions of text.
+    """Highlights the specified regions of text.
 
     This is used to insert ``<span class="hl">...</span>`` tags in the
     text as specified by the ``regions`` variable.
@@ -59,7 +25,7 @@ def highlightregion(value, regions):
     if not regions:
         return value
 
-    s = ""
+    s = ''
 
     # We need to insert span tags into a string already consisting
     # of span tags. We have a list of ranges that our span tags should
@@ -75,45 +41,52 @@ def highlightregion(value, regions):
     # This code makes the assumption that the list of regions is sorted.
     # This is safe to assume in practice, but if we ever at some point
     # had reason to doubt it, we could always sort the regions up-front.
-    in_tag = in_entity = in_hl = False
+    in_hl = False
     i = j = r = 0
-    region = regions[r]
+    region_start, region_end = regions[r]
 
-    for i in xrange(len(value)):
-        if value[i] == "<":
-            in_tag = True
+    while i < len(value):
+        c = value[i]
 
-            if in_hl:
-                s += "</span>"
-                in_hl = False
-        elif value[i] == ">":
-            in_tag = False
-        elif value[i] == ';' and in_entity:
-            in_entity = False
-            j += 1
-        elif not in_tag and not in_entity:
-            if not in_hl and region[0] <= j < region[1]:
-                s += '<span class="hl">'
-                in_hl = True
-
-            if value[i] == '&':
-                in_entity = True
-            else:
-                j += 1
-
-        s += value[i]
-
-        if j == region[1]:
-            r += 1
-
+        if c == '<':
             if in_hl:
                 s += '</span>'
                 in_hl = False
 
+            k = value.find('>', i)
+            assert k != -1
+
+            s += value[i:k + 1]
+            i = k
+        else:
+            if not in_hl and region_start <= j < region_end:
+                s += '<span class="hl">'
+                in_hl = True
+
+            if c == '&':
+                k = value.find(';', i)
+                assert k != -1
+
+                s += value[i:k + 1]
+                i = k
+                j += 1
+            else:
+                j += 1
+                s += c
+
+        if j == region_end:
+            if in_hl:
+                s += '</span>'
+                in_hl = False
+
+            r += 1
+
             if r == len(regions):
                 break
 
-            region = regions[r]
+            region_start, region_end = regions[r]
+
+        i += 1
 
     if i + 1 < len(value):
         s += value[i + 1:]
@@ -228,15 +201,29 @@ def diff_lines(file, chunk, standalone, line_fmt, anchor_fmt,
     num_lines = len(lines)
     chunk_index = chunk['index']
     change = chunk['change']
-    is_equal = (change == 'equal')
-    is_replace = (change == 'replace')
-    is_insert = (change == 'insert')
-    is_delete = (change == 'delete')
+    is_equal = False
+    is_replace = False
+    is_insert = False
+    is_delete = False
+
+    if change == 'equal':
+        is_equal = True
+    elif change == 'replace':
+        is_replace = True
+    elif change == 'insert':
+        is_insert = True
+    elif change == 'delete':
+        is_delete = True
 
     result = []
 
     for i, line in enumerate(lines):
-        class_attr = ''
+        row_classes = []
+        cell_1_classes = []
+        cell_2_classes = []
+        row_class_attr = ''
+        cell_1_class_attr = ''
+        cell_2_class_attr = ''
         line1 = line[2]
         line2 = line[5]
         linenum1 = line[1]
@@ -245,20 +232,15 @@ def diff_lines(file, chunk, standalone, line_fmt, anchor_fmt,
         anchor = None
 
         if not is_equal:
-            classes = ''
-
             if i == 0:
-                classes += 'first '
+                row_classes.append('first')
                 anchor = '%s.%s' % (file['index'], chunk_index)
 
             if i == num_lines - 1:
-                classes += 'last '
+                row_classes.append('last')
 
             if line[7]:
-                classes += 'whitespace-line'
-
-            if classes:
-                class_attr = ' class="%s"' % classes
+                row_classes.append('whitespace-line')
 
             if is_replace:
                 if len(line1) < DiffChunkGenerator.STYLED_MAX_LINE_LEN:
@@ -279,23 +261,60 @@ def diff_lines(file, chunk, standalone, line_fmt, anchor_fmt,
 
         moved_from = {}
         moved_to = {}
+        is_moved_row = False
+        is_first_moved_row = False
 
-        if len(line) > 8 and line[8]:
-            if is_insert:
-                moved_from = {
-                    'class': 'moved-from',
-                    'line': mark_safe(line[8]),
-                    'target': mark_safe(linenum2),
-                    'text': _('Moved from %s') % line[8],
-                }
+        if len(line) > 8 and isinstance(line[8], dict):
+            moved_info = line[8]
 
-            if is_delete:
-                moved_to = {
-                    'class': 'moved-to',
-                    'line': mark_safe(line[8]),
-                    'target': mark_safe(linenum1),
-                    'text': _('Moved to %s') % line[8],
-                }
+            if 'from' in moved_info:
+                moved_from_linenum, moved_from_first = moved_info['from']
+                is_moved_row = True
+
+                cell_2_classes.append('moved-from')
+
+                if moved_from_first:
+                    # This is the start of a new move range.
+                    is_first_moved_row = True
+                    cell_2_classes.append('moved-from-start')
+                    moved_from = {
+                        'class': 'moved-flag',
+                        'line': mark_safe(moved_from_linenum),
+                        'target': mark_safe(linenum2),
+                        'text': _('Moved from line %s') % moved_from_linenum,
+                    }
+
+            if 'to' in moved_info:
+                moved_to_linenum, moved_to_first = moved_info['to']
+                is_moved_row = True
+
+                cell_1_classes.append('moved-to')
+
+                if moved_to_first:
+                    # This is the start of a new move range.
+                    is_first_moved_row = True
+                    cell_1_classes.append('moved-to-start')
+                    moved_to = {
+                        'class': 'moved-flag',
+                        'line': mark_safe(moved_to_linenum),
+                        'target': mark_safe(linenum1),
+                        'text': _('Moved to line %s') % moved_to_linenum,
+                    }
+
+        if is_moved_row:
+            row_classes.append('moved-row')
+
+        if is_first_moved_row:
+            row_classes.append('moved-row-start')
+
+        if row_classes:
+            row_class_attr = ' class="%s"' % ' '.join(row_classes)
+
+        if cell_1_classes:
+            cell_1_class_attr = ' class="%s"' % ' '.join(cell_1_classes)
+
+        if cell_2_classes:
+            cell_2_class_attr = ' class="%s"' % ' '.join(cell_2_classes)
 
         anchor_html = ''
         begin_collapse_html = ''
@@ -305,7 +324,9 @@ def diff_lines(file, chunk, standalone, line_fmt, anchor_fmt,
 
         context = {
             'chunk_index': chunk_index,
-            'class_attr': class_attr,
+            'row_class_attr': row_class_attr,
+            'cell_1_class_attr': cell_1_class_attr,
+            'cell_2_class_attr': cell_2_class_attr,
             'linenum_row': line[0],
             'linenum1': linenum1,
             'linenum2': linenum2,

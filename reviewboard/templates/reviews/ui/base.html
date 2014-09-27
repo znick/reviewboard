@@ -1,38 +1,39 @@
 {% extends "reviews/reviewable_base.html" %}
-{% load djblets_deco i18n reviewtags tz %}
+{% load djblets_deco djblets_js djblets_utils i18n reviewtags tz %}
 
 {% block title %}
  {{review_ui.name}}{% if caption %}: {{caption}}{% endif %}
 {% endblock %}
 
+{% block css %}
+{{block.super}}
+{%  block review_ui_css %}{% endblock %}
+{% endblock %}
+
 {% block content %}
-<div id="review_request">
+{%  definevar "review_ui_box_content" %}{% block review_ui_box_content %}{% endblock %}{% enddefinevar %}
+
+<div id="review_request" class="review-ui-box{% if review_ui_box_content %} has-review-ui-box-content{% endif %}">
+{%  include "reviews/trophy_box.html" %}
+{%  include "reviews/review_header.html" %}
+
 {%  box "review-request" %}
-<div class="actions-container">
+ <div class="actions-container">
  {% star review_request %}
- <ul class="actions">
+  <ul class="actions">
 {%   include "reviews/review_request_actions_secondary.html" %}
 {%   if has_diffs %}
-  <li class="primary"><a href="{% url raw_diff review_request.display_id %}">{% trans "Download Diff" %}</a></li>
+   <li class="primary"><a href="{% url 'raw-diff' review_request.display_id %}">{% trans "Download Diff" %}</a></li>
 {%   endif %}
 {%   include "reviews/review_request_actions_primary.html" %}
-  <li class="primary"><a href="{{review_request.get_absolute_url}}">{% trans "View Reviews" %}</a></li>
+   <li class="primary"><a href="{{review_request.get_absolute_url}}">{% trans "View Reviews" %}</a></li>
 {%   if has_diffs %}
-  <li class="primary"><a href="{{review_request.get_absolute_url}}diff/#index_header">{% trans "View Diff" %}</a></li>
+   <li class="primary"><a href="{{review_request.get_absolute_url}}diff/#index_header">{% trans "View Diff" %}</a></li>
 {%   endif %}
- </ul>
-</div>
-{%   include "reviews/review_request_dlgs.html" %}
-
- <div class="main">
-  <div class="header">
-   <div id="summary_wrapper">
-    <h1 id="summary">{{caption}}</h1>
-   </div>
-  </div>
-  <div class="content">
-{%   block review_ui_box_content %}{% endblock %}
-  </div>
+  </ul>
+ </div>
+ <div class="content review-ui-box-content">
+  {{review_ui_box_content}}
  </div>
 {%  endbox %}
 </div>
@@ -48,7 +49,7 @@
 <script>
     RB.PageManager.setPage(new RB.ReviewablePageView({
 {%  localtime off %}
-        lastActivityTimestamp: '{{last_activity_time|date:"c"}}',
+        lastActivityTimestamp: {{last_activity_time|json_dumps}},
 {%  endlocaltime %}
 {%  include "reviews/reviewable_page_data.js" %}
     }));

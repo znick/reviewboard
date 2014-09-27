@@ -1,27 +1,42 @@
+from __future__ import unicode_literals
+
 import os
 import shutil
 import tempfile
 
 from django.conf import settings
 from django.forms import ValidationError
-from django.test import TestCase
-from django.test import Client
 from djblets.siteconfig.models import SiteConfiguration
 
 from reviewboard.admin import checks
 from reviewboard.ssh.client import SSHClient
 from reviewboard.admin.validation import validate_bug_tracker
 from reviewboard.site.urlresolvers import local_site_reverse
+from reviewboard.testing.testcase import TestCase
 
 
 class UpdateTests(TestCase):
     """Tests for update required pages"""
+    def setUp(self):
+        super(UpdateTests, self).setUp()
+
+        self.old_media_root = settings.MEDIA_ROOT
 
     def tearDown(self):
+        super(UpdateTests, self).tearDown()
+
         # Make sure we don't break further tests by resetting this fully.
         checks.reset_check_cache()
 
-    def testManualUpdatesRequired(self):
+        # If test_manual_updates_bad_upload failed in the middle, it could
+        # neglect to fix the MEDIA_ROOT, which will break a bunch of future
+        # tests. Make sure it's always what we expect.
+        settings.MEDIA_ROOT = self.old_media_root
+        siteconfig = SiteConfiguration.objects.get_current()
+        siteconfig.set('site_media_root', self.old_media_root)
+        siteconfig.save()
+
+    def test_manual_updates(self):
         """Testing check_updates_required with valid configuration"""
         # NOTE: This is assuming the install is fine. It should be given
         #       that we set things like the uploaded path correctly to
@@ -30,18 +45,17 @@ class UpdateTests(TestCase):
 
         self.assertEqual(len(updates_required), 0)
 
-    def testManualUpdatesRequiredBadUpload(self):
+    def test_manual_updates_bad_upload(self):
         """Testing check_updates_required with a bad upload directory"""
         siteconfig = SiteConfiguration.objects.get_current()
 
-        old_media_root = settings.MEDIA_ROOT
         siteconfig.set('site_media_root', '/')
         siteconfig.save()
         settings.MEDIA_ROOT = "/"
         checks.reset_check_cache()
 
         updates_required = checks.check_updates_required()
-        self.assertEqual(len(updates_required), 1)
+        self.assertEqual(len(updates_required), 2)
 
         url, data = updates_required[0]
         self.assertEqual(url, "admin/manual-updates/media-upload-dir.html")
@@ -50,8 +64,9 @@ class UpdateTests(TestCase):
         self.assertEqual(response.status_code, 200)
         self.assertTemplateUsed(response, "admin/manual_updates_required.html")
 
-        settings.MEDIA_ROOT = old_media_root
-        siteconfig.set('site_media_root', old_media_root)
+        settings.MEDIA_ROOT = self.old_media_root
+        siteconfig = SiteConfiguration.objects.get_current()
+        siteconfig.set('site_media_root', self.old_media_root)
         siteconfig.save()
 
         # Make sure that the site works again once the media root is fixed.
@@ -87,6 +102,8 @@ class SSHSettingsFormTestCase(TestCase):
     fixtures = ['test_users']
 
     def setUp(self):
+        super(SSHSettingsFormTestCase, self).setUp()
+
         # Setup temp directory to prevent the original ssh related
         # configurations been overwritten.
         self.old_home = os.getenv('HOME')
@@ -94,11 +111,11 @@ class SSHSettingsFormTestCase(TestCase):
         os.environ['RBSSH_ALLOW_AGENT'] = '0'
         self._set_home(self.tempdir)
 
-        # Init client for http request, ssh_client for ssh config manipulation.
-        self.client = Client()
         self.ssh_client = SSHClient()
 
     def tearDown(self):
+        super(SSHSettingsFormTestCase, self).tearDown()
+
         self._set_home(self.old_home)
 
         if self.tempdir:
@@ -109,7 +126,6 @@ class SSHSettingsFormTestCase(TestCase):
 
     def test_generate_key(self):
         """Testing SSHSettingsForm POST with generate_key=1"""
-
         # Should have no ssh key at this point.
         self.assertEqual(self.ssh_client.get_user_key(), None)
 
@@ -119,8 +135,7 @@ class SSHSettingsFormTestCase(TestCase):
             'generate_key': 1,
         })
 
-        # Check the response's status_code,
-        # 302 means the request has been proceeded as POST.
+        # On success, the form returns HTTP 302 (redirect).
         self.assertEqual(response.status_code, 302)
 
         # Check whether the key has been created.
@@ -128,7 +143,6 @@ class SSHSettingsFormTestCase(TestCase):
 
     def test_delete_key(self):
         """Testing SSHSettingsForm POST with delete_key=1"""
-
         # Should have no ssh key at this point, generate one.
         self.assertEqual(self.ssh_client.get_user_key(), None)
         self.ssh_client.generate_user_key()
@@ -140,8 +154,7 @@ class SSHSettingsFormTestCase(TestCase):
             'delete_key': 1,
         })
 
-        # Check the response's status_code,
-        # 302 means the request has been proceeded as POST.
+        # On success, the form returns HTTP 302 (redirect).
         self.assertEqual(response.status_code, 302)
 
         # Check whether the key has been deleted.

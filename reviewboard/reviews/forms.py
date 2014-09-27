@@ -1,8 +1,11 @@
+from __future__ import unicode_literals
+
 import re
 
 from django import forms
 from django.contrib.admin.widgets import FilteredSelectMultiple
-from django.utils.translation import ugettext as _
+from django.core.exceptions import ValidationError
+from django.utils.translation import ugettext_lazy as _
 
 from reviewboard.diffviewer import forms as diffviewer_forms
 from reviewboard.diffviewer.models import DiffSet
@@ -10,6 +13,14 @@ from reviewboard.reviews.models import (DefaultReviewer, Group,
                                         ReviewRequestDraft, Screenshot)
 from reviewboard.scmtools.models import Repository
 from reviewboard.site.validation import validate_review_groups, validate_users
+
+
+def regex_validator(value):
+    """Validates that the specified regular expression is valid."""
+    try:
+        re.compile(value)
+    except Exception as e:
+        raise ValidationError(e)
 
 
 class DefaultReviewerForm(forms.ModelForm):
@@ -22,6 +33,7 @@ class DefaultReviewerForm(forms.ModelForm):
         label=_("File regular expression"),
         max_length=256,
         widget=forms.TextInput(attrs={'size': '60'}),
+        validators=[regex_validator],
         help_text=_('File paths are matched against this regular expression '
                     'to determine if these reviewers should be added.'))
 
@@ -34,26 +46,15 @@ class DefaultReviewerForm(forms.ModelForm):
                     'all repositories.'),
         widget=FilteredSelectMultiple(_("Repositories"), False))
 
-    def clean_file_regex(self):
-        """Validates that the specified regular expression is valid."""
-        file_regex = self.cleaned_data['file_regex']
-
-        try:
-            re.compile(file_regex)
-        except Exception, e:
-            raise forms.ValidationError(e)
-
-        return file_regex
-
     def clean(self):
         try:
             validate_users(self, 'people')
-        except forms.ValidationError, e:
+        except ValidationError as e:
             self._errors['people'] = self.error_class(e.messages)
 
         try:
             validate_review_groups(self, 'groups')
-        except forms.ValidationError, e:
+        except ValidationError as e:
             self._errors['groups'] = self.error_class(e.messages)
 
         # Now make sure the repositories are valid.

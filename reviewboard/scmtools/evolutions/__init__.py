@@ -1,3 +1,6 @@
+from __future__ import unicode_literals
+
+
 SEQUENCE = [
     'bugzilla_url_charfield',
     'repository_raw_file_url',
@@ -8,4 +11,7 @@ SEQUENCE = [
     'group_site',
     'repository_hosting_accounts',
     'repository_extra_data_null',
+    'unique_together_baseline',
+    'repository_archive',
+    'repository_hooks_uuid',
 ]

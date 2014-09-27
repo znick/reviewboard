@@ -114,7 +114,8 @@ RB.NewReviewRequestView = Backbone.View.extend({
         this._$content = this.$('.main');
         this._$hint = this.$('.hint');
 
-        this._$sidebar.append(this._repositorySelectionView.render().el);
+        this._$sidebar.append(this._repositorySelectionView.el);
+        this._repositorySelectionView.render();
 
         if (this._preCommitView) {
             this._$hint.hide();
@@ -200,7 +201,7 @@ RB.NewReviewRequestView = Backbone.View.extend({
             });
         } else {
             this._preCommitView = new RB.PreCommitView({
-                model: new RB.PreCommitModel({
+                model: new RB.UploadDiffModel({
                     repository: repository
                 })
             });

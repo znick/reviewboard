@@ -1,21 +1,35 @@
+from __future__ import unicode_literals
+
+import logging
+import uuid
+from time import time
+
 from django.contrib.auth.models import User
 from django.core.cache import cache
-from django.core.exceptions import ImproperlyConfigured
+from django.core.exceptions import ImproperlyConfigured, ValidationError
 from django.db import models
+from django.db import IntegrityError
+from django.utils import six, timezone
+from django.utils.encoding import python_2_unicode_compatible
+from django.utils.functional import cached_property
 from django.utils.http import urlquote
+from django.utils.six.moves import range
 from django.utils.translation import ugettext_lazy as _
+from djblets.cache.backend import cache_memoize, make_cache_key
+from djblets.db.fields import JSONField
 from djblets.log import log_timed
-from djblets.util.fields import JSONField
-from djblets.util.misc import cache_memoize, make_cache_key
 
 from reviewboard.hostingsvcs.models import HostingServiceAccount
+from reviewboard.hostingsvcs.service import get_hosting_service
 from reviewboard.scmtools.managers import RepositoryManager, ToolManager
 from reviewboard.scmtools.signals import (checked_file_exists,
                                           checking_file_exists,
                                           fetched_file, fetching_file)
+from reviewboard.scmtools.core import FileNotFoundError
 from reviewboard.site.models import LocalSite
 
 
+@python_2_unicode_compatible
 class Tool(models.Model):
     name = models.CharField(max_length=32, unique=True)
     class_name = models.CharField(max_length=128, unique=True)
@@ -36,7 +50,7 @@ class Tool(models.Model):
     field_help_text = property(
         lambda x: x.scmtool_class.field_help_text)
 
-    def __unicode__(self):
+    def __str__(self):
         return self.name
 
     def get_scmtool_class(self):
@@ -46,8 +60,9 @@ class Tool(models.Model):
             module, attr = path[:i], path[i + 1:]
 
             try:
-                mod = __import__(module, {}, {}, [attr])
-            except ImportError, e:
+                mod = __import__(six.binary_type(module), {}, {},
+                                 [six.binary_type(attr)])
+            except ImportError as e:
                 raise ImproperlyConfigured(
                     'Error importing SCM Tool %s: "%s"' % (module, e))
 
@@ -65,6 +80,7 @@ class Tool(models.Model):
         ordering = ("name",)
 
 
+@python_2_unicode_compatible
 class Repository(models.Model):
     name = models.CharField(max_length=64)
     path = models.CharField(max_length=255)
@@ -110,6 +126,14 @@ class Repository(models.Model):
                     'shown when creating new review requests. Existing '
                     'review requests are unaffected.'))
 
+    archived = models.BooleanField(
+        _('Archived'),
+        default=False,
+        help_text=_("Archived repositories do not show up in lists of "
+                    "repositories, and aren't open to new review requests."))
+
+    archived_timestamp = models.DateTimeField(null=True, blank=True)
+
     # Access control
     local_site = models.ForeignKey(LocalSite,
                                    verbose_name=_('Local site'),
@@ -138,19 +162,44 @@ class Repository(models.Model):
         help_text=_('A list of invite-only review groups whose members have '
                     'explicit access to the repository.'))
 
+    hooks_uuid = models.CharField(
+        _('Hooks UUID'),
+        max_length=32,
+        null=True,
+        blank=True,
+        help_text=_('Unique identifier used for validating incoming '
+                    'webhooks.'))
+
     objects = RepositoryManager()
 
     BRANCHES_CACHE_PERIOD = 60 * 5  # 5 minutes
-    COMMITS_CACHE_PERIOD = 60 * 60 * 24  # 1 day
+    COMMITS_CACHE_PERIOD_SHORT = 60 * 5  # 5 minutes
+    COMMITS_CACHE_PERIOD_LONG = 60 * 60 * 24  # 1 day
 
     def get_scmtool(self):
         cls = self.tool.get_scmtool_class()
         return cls(self)
 
-    @property
+    @cached_property
     def hosting_service(self):
         if self.hosting_account:
             return self.hosting_account.service
+
+        return None
+
+    @cached_property
+    def bug_tracker_service(self):
+        """Returns selected bug tracker service if one exists."""
+        if self.extra_data.get('bug_tracker_use_hosting'):
+            return self.hosting_service
+        else:
+            bug_tracker_type = self.extra_data.get('bug_tracker_type')
+            if bug_tracker_type:
+                bug_tracker_cls = get_hosting_service(bug_tracker_type)
+
+                # TODO: we need to figure out some way of storing a second
+                # hosting service account for bug trackers.
+                return bug_tracker_cls(HostingServiceAccount())
 
         return None
 
@@ -168,6 +217,75 @@ class Repository(models.Model):
             return hosting_service.supports_post_commit
         else:
             return self.get_scmtool().supports_post_commit
+
+    def get_credentials(self):
+        """Returns the credentials for this repository.
+
+        This returns a dictionary with 'username' and 'password' keys.
+        By default, these will be the values stored for the repository,
+        but if a hosting service is used and the repository doesn't have
+        values for one or both of these, the hosting service's credentials
+        (if available) will be used instead.
+        """
+        username = self.username
+        password = self.password
+
+        if self.hosting_account and self.hosting_account.service:
+            username = username or self.hosting_account.username
+            password = password or self.hosting_account.service.get_password()
+
+        return {
+            'username': username,
+            'password': password,
+        }
+
+    def get_or_create_hooks_uuid(self, max_attempts=20):
+        """Returns a hooks UUID, creating one if necessary.
+
+        If a hooks UUID isn't already saved, then this will try to generate one
+        that doesn't conflict with any other registered hooks UUID. It will try
+        up to `max_attempts` times, and if it fails, None will be returned.
+        """
+        if not self.hooks_uuid:
+            for attempt in range(max_attempts):
+                self.hooks_uuid = uuid.uuid4().hex
+
+                try:
+                    self.save(update_fields=['hooks_uuid'])
+                    break
+                except IntegrityError:
+                    # We hit a collision with the token value. Try again.
+                    self.hooks_uuid = None
+
+            if not self.hooks_uuid:
+                s = ('Unable to generate a unique hooks UUID for '
+                     'repository %s after %d attempts'
+                     % (self.pk, max_attempts))
+                logging.error(s)
+                raise Exception(s)
+
+        return self.hooks_uuid
+
+    def archive(self, save=True):
+        """Archives a repository.
+
+        The repository won't appear in any public lists of repositories,
+        and won't be used when looking up repositories. Review requests
+        can't be posted against an archived repository.
+
+        New repositories can be created with the same information as the
+        archived repository.
+        """
+        # This should be sufficiently unlikely to create duplicates. time()
+        # will use up a max of 8 characters, so we slice the name down to
+        # make the result fit in 64 characters
+        self.name = 'ar:%s:%x' % (self.name[:50], int(time()))
+        self.archived = True
+        self.public = False
+        self.archived_timestamp = timezone.now()
+
+        if save:
+            self.save()
 
     def get_file(self, path, revision, base_commit_id=None, request=None):
         """Returns a file from the repository.
@@ -230,7 +348,7 @@ class Repository(models.Model):
     def get_commit_cache_key(self, commit):
         return 'repository-commit:%s:%s' % (self.pk, commit)
 
-    def get_commits(self, start=None):
+    def get_commits(self, branch=None, start=None):
         """Returns a list of commits.
 
         This is paginated via the 'start' parameter. Any exceptions are
@@ -238,22 +356,36 @@ class Repository(models.Model):
         """
         hosting_service = self.hosting_service
 
-        cache_key = make_cache_key('repository-commits:%s:%s' % (self.pk, start))
+        commits_kwargs = {
+            'branch': branch,
+            'start': start,
+        }
+
         if hosting_service:
-            commits_callable = lambda: hosting_service.get_commits(self, start)
+            commits_callable = \
+                lambda: hosting_service.get_commits(self, **commits_kwargs)
         else:
-            commits_callable = lambda: self.get_scmtool().get_commits(start)
+            commits_callable = \
+                lambda: self.get_scmtool().get_commits(**commits_kwargs)
 
         # We cache both the entire list for 'start', as well as each individual
         # commit. This allows us to reduce API load when people are looking at
         # the "new review request" page more frequently than they're pushing
         # code, and will usually save 1 API request when they go to actually
         # create a new review request.
-        commits = cache_memoize(cache_key, commits_callable)
+        if branch and start:
+            cache_period = self.COMMITS_CACHE_PERIOD_LONG
+        else:
+            cache_period = self.COMMITS_CACHE_PERIOD_SHORT
+
+        cache_key = make_cache_key('repository-commits:%s:%s:%s'
+                                   % (self.pk, branch, start))
+        commits = cache_memoize(cache_key, commits_callable,
+                                cache_period)
 
         for commit in commits:
             cache.set(self.get_commit_cache_key(commit.id),
-                      commit, self.COMMITS_CACHE_PERIOD)
+                      commit, self.COMMITS_CACHE_PERIOD_LONG)
 
         return commits
 
@@ -280,6 +412,7 @@ class Repository(models.Model):
             return False
 
         return (self.public or
+                user.is_superuser or
                 (user.is_authenticated() and
                  (self.review_groups.filter(users__pk=user.pk).count() > 0 or
                   self.users.filter(pk=user.pk).count() > 0)))
@@ -289,12 +422,24 @@ class Repository(models.Model):
 
         The repository is mutable by the user if the user is an administrator
         with proper permissions or the repository is part of a LocalSite and
-        the user is in the admin list.
+        the user has permissions to modify it.
         """
-        return (user.has_perm('scmtools.change_repository') or
-                (self.local_site and self.local_site.is_mutable_by(user)))
+        return user.has_perm('scmtools.change_repository', self.local_site)
 
-    def __unicode__(self):
+    def save(self, **kwargs):
+        """Saves the repository.
+
+        This will perform any data normalization needed, and then save the
+        repository to the database.
+        """
+        # Prevent empty strings from saving in the admin UI, which could lead
+        # to database-level validation errors.
+        if self.hooks_uuid == '':
+            self.hooks_uuid = None
+
+        return super(Repository, self).save(**kwargs)
+
+    def __str__(self):
         return self.name
 
     def _make_file_cache_key(self, path, revision, base_commit_id):
@@ -338,7 +483,16 @@ class Repository(models.Model):
                 revision,
                 base_commit_id=base_commit_id)
         else:
-            data = self.get_scmtool().get_file(path, revision)
+            try:
+                data = self.get_scmtool().get_file(path, revision)
+            except FileNotFoundError:
+                if base_commit_id:
+                    # Some funky workflows with mq (mercurial) can cause issues
+                    # with parent diffs. If we didn't find it with the parsed
+                    # revision, and there's a base commit ID, try that.
+                    data = self.get_scmtool().get_file(path, base_commit_id)
+                else:
+                    raise
 
         log_timer.done()
 
@@ -366,7 +520,7 @@ class Repository(models.Model):
         file_cache_key = make_cache_key(
             self._make_file_cache_key(path, revision, base_commit_id))
 
-        if cache.has_key(file_cache_key):
+        if file_cache_key in cache:
             exists = True
         else:
             # We didn't have that in the cache, so check from the repository.
@@ -396,10 +550,44 @@ class Repository(models.Model):
 
         return exists
 
+    def get_encoding_list(self):
+        """Returns a list of candidate text encodings for files"""
+        encodings = []
+        for e in self.encoding.split(','):
+            e = e.strip()
+            if e:
+                encodings.append(e)
+
+        return encodings or ['iso-5589-15']
+
+    def clean(self):
+        """Clean method for checking null unique_together constraints.
+
+        Django has a bug where unique_together constraints for foreign keys
+        aren't checked properly if one of the relations is null. This means
+        that users who aren't using local sites could create multiple groups
+        with the same name.
+        """
+        super(Repository, self).clean()
+
+        if self.local_site is None:
+            q = Repository.objects.exclude(pk=self.pk)
+
+            if q.filter(name=self.name).exists():
+                raise ValidationError(
+                    _('A repository with this name already exists'),
+                    params={'field': 'name'})
+
+            if q.filter(path=self.path).exists():
+                raise ValidationError(
+                    _('A repository with this path already exists'),
+                    params={'field': 'path'})
+
     class Meta:
         verbose_name_plural = "Repositories"
         # TODO: the path:local_site unique constraint causes problems when
         # archiving repositories. We should really remove this constraint from
         # the tables and enforce it in code whenever visible=True
         unique_together = (('name', 'local_site'),
-                           ('path', 'local_site'))
+                           ('archived_timestamp', 'path', 'local_site'),
+                           ('hooks_uuid', 'local_site'))

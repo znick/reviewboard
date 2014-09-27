@@ -1,6 +1,9 @@
+from __future__ import unicode_literals
+
 import os
 import subprocess
 
+from django.utils import six
 from djblets.util.filesystem import is_exe_in_path
 
 from reviewboard.diffviewer.parser import DiffParser
@@ -26,7 +29,7 @@ class MonotoneTool(SCMTool):
     def get_file(self, path, revision=None):
         # revision is actually the file id here...
         if not revision:
-            return ""
+            return b""
 
         return self.client.get_file(revision)
 
@@ -56,15 +59,16 @@ class MonotoneTool(SCMTool):
 
 
 class MonotoneDiffParser(DiffParser):
-    INDEX_SEP = "=" * 60
+    INDEX_SEP = b"=" * 60
 
     def parse_special_header(self, linenum, info):
-        if self.lines[linenum].startswith("#"):
-            if "is binary" in self.lines[linenum]:
+        if self.lines[linenum].startswith(b"#"):
+            if b"is binary" in self.lines[linenum]:
                 info['binary'] = True
                 linenum += 1
             elif self.lines[linenum + 1] == self.INDEX_SEP:
-                # this is a standard mtn diff header (comments with the file summary)
+                # This is a standard mtn diff header (comments with the file
+                # summary)
                 linenum += 1
 
         return linenum
@@ -91,7 +95,7 @@ class MonotoneClient:
                              close_fds=(os.name != 'nt'))
 
         out = p.stdout.read()
-        err = p.stderr.read()
+        err = six.text_type(p.stderr.read())
         failure = p.wait()
 
         if not failure:

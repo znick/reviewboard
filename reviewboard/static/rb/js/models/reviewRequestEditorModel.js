@@ -11,18 +11,12 @@ RB.ReviewRequestEditor = Backbone.Model.extend({
         editCount: 0,
         hasDraft: false,
         fileAttachmentComments: {},
+        mutableByUser: false,
         pendingSaveCount: 0,
         publishing: false,
-        reviewRequest: null
-    },
-
-    _jsonFieldMap: {
-        bugsClosed: 'bugs_closed',
-        changeDescription: 'changedescription',
-        dependsOn: 'depends_on',
-        targetGroups: 'target_groups',
-        targetPeople: 'target_people',
-        testingDone: 'testing_done'
+        reviewRequest: null,
+        statusEditable: false,
+        statusMutableByUser: false
     },
 
     initialize: function() {
@@ -47,6 +41,9 @@ RB.ReviewRequestEditor = Backbone.Model.extend({
         reviewRequest.draft.on('saved', function() {
             this.trigger('saved');
         }, this);
+
+        this.listenTo(reviewRequest, 'change:state', this._computeEditable);
+        this._computeEditable();
     },
 
     /*
@@ -59,8 +56,8 @@ RB.ReviewRequestEditor = Backbone.Model.extend({
      * for any existing or newly uploaded file attachments.
      */
     createFileAttachment: function(attributes) {
-        var reviewRequest = this.get('reviewRequest'),
-            fileAttachment = reviewRequest.createFileAttachment(attributes);
+        var draft = this.get('reviewRequest').draft,
+            fileAttachment = draft.createFileAttachment(attributes);
 
         this.fileAttachments.add(fileAttachment);
 
@@ -95,7 +92,18 @@ RB.ReviewRequestEditor = Backbone.Model.extend({
             return;
         }
 
-        jsonFieldName = this._jsonFieldMap[fieldName] || fieldName;
+        if (options.useExtraData) {
+            jsonFieldName = 'extra_data.' + options.fieldID;
+        } else {
+            if (fieldName === 'changeDescription' ||
+                fieldName === 'description' ||
+                fieldName === 'testingDone') {
+                data.text_type = 'markdown';
+            }
+
+            jsonFieldName = options.jsonFieldName;
+        }
+
         data[jsonFieldName] = value;
 
         reviewRequest.draft.save({
@@ -181,15 +189,21 @@ RB.ReviewRequestEditor = Backbone.Model.extend({
      * success, the "publish" event will be triggered.
      */
     publishDraft: function() {
-        var reviewRequest = this.get('reviewRequest');
+        var reviewRequest = this.get('reviewRequest'),
+            onError = function(model, xhr) {
+                this.trigger('publishError', xhr.errorText);
+            };
 
-        reviewRequest.draft.publish({
+        reviewRequest.draft.ensureCreated({
             success: function() {
-                this.trigger('published');
+                reviewRequest.draft.publish({
+                    success: function() {
+                        this.trigger('published');
+                    },
+                    error: onError
+                }, this);
             },
-            error: function(error) {
-                this.trigger('publishError', error.errorText);
-            }
+            error: onError
         }, this);
     },
 
@@ -228,6 +242,25 @@ RB.ReviewRequestEditor = Backbone.Model.extend({
         if (_.has(attrs, 'editCount') && attrs.editCount < 0) {
             return strings.UNBALANCED_EDIT_COUNT;
         }
+    },
+
+    /*
+     * Computes the editable state of the review request and open/close states.
+     *
+     * The review request is editable if the user has edit permissions and it's
+     * not closed.
+     *
+     * The close state and accompanying description is editable if the user
+     * has the ability to close the review request and it's currently closed.
+     */
+    _computeEditable: function() {
+        var state = this.get('reviewRequest').get('state'),
+            pending = (state === RB.ReviewRequest.PENDING);
+
+        this.set({
+            editable: this.get('mutableByUser') && pending,
+            statusEditable: this.get('statusMutableByUser') && !pending
+        });
     },
 
     /*

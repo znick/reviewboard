@@ -1,4 +1,4 @@
-describe('pages/views/ReviewablePageView', function() {
+suite('rb/pages/views/ReviewablePageView', function() {
     var $editReview,
         $shipIt,
         pageView;
@@ -16,10 +16,12 @@ describe('pages/views/ReviewablePageView', function() {
             el: $container,
             reviewRequestData: {
                 id: 123,
-                loaded: true
+                loaded: true,
+                state: RB.ReviewRequest.PENDING
             },
             editorData: {
-                editable: true
+                mutableByUser: true,
+                statusMutableByUser: true
             }
         });
 

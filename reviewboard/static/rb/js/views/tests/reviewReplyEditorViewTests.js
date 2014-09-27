@@ -1,4 +1,4 @@
-describe('views/ReviewReplyEditorView', function() {
+suite('rb/views/ReviewReplyEditorView', function() {
     var reviewReply,
         editor,
         view;
@@ -16,7 +16,8 @@ describe('views/ReviewReplyEditorView', function() {
 
         editor = new RB.ReviewReplyEditor({
             review: new RB.Review({
-                id: 42
+                id: 42,
+                parentObject: new RB.ReviewRequest()
             }),
             reviewReply: reviewReply,
             contextType: 'rcbt',
@@ -33,7 +34,7 @@ describe('views/ReviewReplyEditorView', function() {
 
         $container
             .append(view._$commentsList)
-            .append($('<a href="#" class="add_comment_link">Add Comment</a>'));
+            .append($('<a href="#" class="add_comment_link">New Comment</a>'));
     });
 
     describe('Construction', function() {
@@ -73,11 +74,10 @@ describe('views/ReviewReplyEditorView', function() {
 
     describe('Event handling', function() {
         it('Comment discarded', function() {
-            var commentText = 'Test comment',
-                $el;
+            var $el;
 
             view._makeCommentElement({
-                commentText: commentText
+                text: 'Test comment'
             });
 
             view.render();
@@ -85,7 +85,7 @@ describe('views/ReviewReplyEditorView', function() {
             $el = view.$('.reply-comments li');
             expect($el.length).toBe(1);
 
-            reviewReply.trigger('destroy');
+            reviewReply.trigger('destroyed');
 
             $el = view.$('.reply-comments li');
             expect($el.length).toBe(0);
@@ -93,10 +93,8 @@ describe('views/ReviewReplyEditorView', function() {
         });
 
         it('Comment published', function() {
-            var commentText = 'Test comment',
-                $draftEl = view._makeCommentElement({
-                    commentID: 16,
-                    commentText: commentText
+            var $draftEl = view._makeCommentElement({
+                    commentID: 16
                 }),
                 $el;
 
@@ -104,6 +102,7 @@ describe('views/ReviewReplyEditorView', function() {
             spyOn($.fn, 'timesince').andCallThrough();
 
             view.render();
+            editor.set('text', 'Test **comment**');
             reviewReply.trigger('published');
 
             $el = view.$('.reply-comments li');
@@ -112,6 +111,8 @@ describe('views/ReviewReplyEditorView', function() {
             expect($draftEl).not.toBe($el);
             expect($el.hasClass('draft')).toBe(false);
             expect($el.data('comment-id')).toBe(16);
+            expect($el.find('.reviewtext').html())
+                .toBe('<p>Test <strong>comment</strong></p>');
             expect(view._$draftComment).toBe(null);
             expect($.fn.user_infobox).toHaveBeenCalled();
             expect($.fn.timesince).toHaveBeenCalled();

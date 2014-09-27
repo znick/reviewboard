@@ -1,10 +1,10 @@
-describe('resources/models/ReviewReply', function() {
+suite('rb/resources/models/ReviewReply', function() {
     var parentObject,
         model;
 
     beforeEach(function() {
         parentObject = new RB.BaseResource({
-            public: true,
+            'public': true,
             links: {
                 replies: {
                     href: '/api/foos/replies/'
@@ -390,7 +390,8 @@ describe('resources/models/ReviewReply', function() {
                     id: 42,
                     body_top: 'foo',
                     body_bottom: 'bar',
-                    public: false
+                    'public': false,
+                    text_type: 'markdown'
                 }
             });
 
@@ -398,7 +399,8 @@ describe('resources/models/ReviewReply', function() {
             expect(data.id).toBe(42);
             expect(data.bodyTop).toBe('foo');
             expect(data.bodyBottom).toBe('bar');
-            expect(data.public).toBe(false);
+            expect(data['public']).toBe(false);
+            expect(data.richText).toBe(true);
         });
     });
 
@@ -429,7 +431,7 @@ describe('resources/models/ReviewReply', function() {
 
                 model.set('public', true);
                 data = model.toJSON();
-                expect(data.public).toBe(true);
+                expect(data['public']).toBe(true);
             });
         });
     });

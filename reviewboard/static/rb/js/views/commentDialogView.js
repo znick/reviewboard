@@ -94,11 +94,11 @@ var CommentsListView = Backbone.View.extend({
  * used to reply to those comments.
  */
 RB.CommentDialogView = Backbone.View.extend({
-    DIALOG_TOTAL_HEIGHT: 250,
+    DIALOG_TOTAL_HEIGHT: 300,
     DIALOG_NON_EDITABLE_HEIGHT: 120,
     SLIDE_DISTANCE: 10,
     COMMENTS_BOX_WIDTH: 280,
-    FORM_BOX_WIDTH: 380,
+    FORM_BOX_WIDTH: 430,
 
     className: 'comment-dlg',
     template: _.template([
@@ -107,7 +107,13 @@ RB.CommentDialogView = Backbone.View.extend({
         ' <ul></ul>',
         '</div>',
         '<form method="post">',
-        ' <h1 class="title"><%- yourCommentText %></h1>',
+        ' <h1 class="title">',
+        '  <%- yourCommentText %>',
+        '<% if (authenticated && !hasDraft) { %>',
+        '  <a class="markdown-info" href="<%- markdownDocsURL %>"',
+        '     target="_blank"><%- markdownText %></a>',
+        '<% } %>',
+        ' </h1>',
         '<% if (!authenticated) { %>',
         ' <p class="login-text">',
         '  <%= loginText %>',
@@ -115,7 +121,7 @@ RB.CommentDialogView = Backbone.View.extend({
         '<% } else if (hasDraft) { %>',
         ' <p class="draft-warning"><%= draftWarning %></p>',
         '<% } %>',
-        ' <textarea name="text" rows="6" cols="30"></textarea>',
+        ' <div class="comment-text-field"></div>',
         ' <div class="comment-issue-options">',
         '  <input type="checkbox" id="comment_issue" />',
         '  <label for="comment_issue" accesskey="i"><%= openAnIssueText %></label>',
@@ -136,20 +142,17 @@ RB.CommentDialogView = Backbone.View.extend({
         'click .buttons .cancel': '_onCancelClicked',
         'click .buttons .close': '_onCancelClicked',
         'click .buttons .delete': '_onDeleteClicked',
-        'click .buttons .save': '_onSaveClicked',
-        'keydown textarea': '_onTextKeyDown',
-        'keyup textarea': '_onTextKeyUp'
+        'click .buttons .save': 'save',
+        'keydown .comment-text-field': '_onTextKeyDown'
     },
 
     initialize: function() {
-        this._ignoreKeyUp = false;
     },
 
     render: function() {
         var userSession = RB.UserSession.instance,
             reviewRequest = this.model.get('reviewRequest'),
-            reviewRequestEditor = this.model.get('reviewRequestEditor'),
-            $grip;
+            reviewRequestEditor = this.model.get('reviewRequestEditor');
 
         this.options.animate = (this.options.animate !== false);
 
@@ -158,12 +161,16 @@ RB.CommentDialogView = Backbone.View.extend({
             .html(this.template({
                 authenticated: userSession.get('authenticated'),
                 hasDraft: reviewRequest.get('hasDraft'),
-                loginURL: userSession.get('loginURL'),
-                reviewRequestURL: this.options.reviewRequestURL,
+                markdownDocsURL: MANUAL_URL + 'users/markdown/',
+                markdownText: gettext('Markdown'),
                 otherReviewsText: gettext('Other reviews'),
                 yourCommentText: gettext('Your comment'),
-                loginText: gettext('You must <a href="<%= loginURL %>">log in</a> to post a comment.'),
-                draftWarning: gettext('The review request\'s current <a href="{{reviewRequestURL}}">draft</a> needs to be published before you can comment.'),
+                loginText: interpolate(
+                    gettext('You must <a href="%s">log in</a> to post a comment.'),
+                    [userSession.get('loginURL')]),
+                draftWarning: interpolate(
+                    gettext('The review request\'s current <a href="%s">draft</a> needs to be published before you can comment.'),
+                    [reviewRequest.get('reviewURL')]),
                 openAnIssueText: gettext('Open an <u>i</u>ssue'),
                 saveButton: gettext('Save'),
                 cancelButton: gettext('Cancel'),
@@ -173,7 +180,6 @@ RB.CommentDialogView = Backbone.View.extend({
 
         this._$draftForm    = this.$el.find('form');
         this._$commentsPane = this.$el.find('.other-comments');
-        this._$buttons      = this._$draftForm.find(".buttons");
         this._$statusField  = this._$draftForm.find(".status");
         this._$issueOptions = this._$draftForm.find(".comment-issue-options")
             .bindVisibility(this.model, 'canEdit');
@@ -185,29 +191,31 @@ RB.CommentDialogView = Backbone.View.extend({
                 inverse: true
             });
 
-        this._$saveButton = this._$buttons.find('input.save')
+        this.$buttons = this._$draftForm.find('.buttons');
+
+        this.$saveButton = this.$buttons.find('input.save')
             .bindVisibility(this.model, 'canEdit')
             .bindProperty('disabled', this.model, 'canSave', {
                 elementToModel: false,
                 inverse: true
             });
 
-        this._$cancelButton = this._$buttons.find('input.cancel')
+        this.$cancelButton = this.$buttons.find('input.cancel')
             .bindVisibility(this.model, 'canEdit');
 
-        this._$deleteButton = this._$buttons.find('input.delete')
+        this.$deleteButton = this.$buttons.find('input.delete')
             .bindVisibility(this.model, 'canDelete')
             .bindProperty('disabled', this.model, 'canDelete', {
                 elementToModel: false,
                 inverse: true
             });
 
-        this._$closeButton = this._$buttons.find('input.close')
+        this.$closeButton = this.$buttons.find('input.close')
             .bindVisibility(this.model, 'canEdit', {
                 inverse: true
             });
 
-        this._commentsList = new CommentsListView({
+        this.commentsList = new CommentsListView({
             el: this._$commentsPane.find('ul'),
             reviewRequestURL: reviewRequest.get('reviewURL'),
             commentIssueManager: this.options.commentIssueManager,
@@ -218,12 +226,24 @@ RB.CommentDialogView = Backbone.View.extend({
          * We need to handle keypress here, rather than in events above,
          * because jQuery will actually handle it. Backbone fails to.
          */
-        this._$textField = this._$draftForm.find('textarea')
+        this._textEditor = new RB.MarkdownEditorView({
+            el: this._$draftForm.find('.comment-text-field'),
+            autoSize: false,
+            minHeight: 0
+        });
+        this._textEditor.render();
+        this._textEditor.show();
+        this._textEditor.$el
             .keypress(_.bind(this._onTextKeyPress, this))
-            .bindVisibility(this.model, 'canEdit')
-            .bindProperty('value', this.model, 'text', {
-                elementToModel: false
-            });
+            .bindVisibility(this.model, 'canEdit');
+        this._textEditor.setText(this.model.get('text'));
+        this._textEditor.on('change', function() {
+            this.model.set('text', this._textEditor.getText());
+        }, this);
+
+        this.model.on('change:text', function() {
+            this._textEditor.setText(this.model.get('text'));
+        }, this);
 
         this.$el
             .css("position", "absolute")
@@ -240,31 +260,18 @@ RB.CommentDialogView = Backbone.View.extend({
             /*
              * resizable is pretty broken in IE 6/7.
              */
-            $grip = $("<img/>")
-                .addClass("ui-resizable-handle ui-resizable-grip")
-                .attr("src", STATIC_URLS["rb/images/resize-grip.png"])
-                .insertAfter(this._$buttons)
-                .proxyTouchEvents();
-
             this.$el.resizable({
-                handles: $.browser.mobileSafari ? "grip,se"
-                                                : "grip,n,e,s,w,se,sw,ne,nw",
+                handles: $.support.touch ? "grip,se"
+                                         : "grip,n,e,s,w,se,sw,ne,nw",
                 transparent: true,
                 resize: _.bind(this._handleResize, this)
             });
-
-            /* Reset the opacity, which resizable() changes. */
-            $grip.css("opacity", 100);
         }
 
-        if (!$.browser.msie || $.browser.version >= 7) {
-            /*
-             * draggable works in IE7 and up, but not IE6.
-             */
-            this.$el.draggable({
-                handle: $(".title", this).css("cursor", "move")
-            });
-        }
+        this.$('.title').css('cursor', 'move');
+        this.$el.draggable({
+            handle: '.title'
+        });
 
         this.model.on('change:dirty', function() {
             if (this.$el.is(':visible')) {
@@ -280,7 +287,35 @@ RB.CommentDialogView = Backbone.View.extend({
                       this._onPublishedCommentsChanged, this);
         this._onPublishedCommentsChanged();
 
+        /* Add any hooks. */
+        RB.CommentDialogHook.each(function(hook) {
+            var HookViewType = hook.get('viewType'),
+                hookView = new HookViewType({
+                    commentDialog: this,
+                    commentEditor: this.model,
+                    el: this.el
+                });
+
+            hookView.render();
+        }, this);
+
         return this;
+    },
+
+    /*
+     * Callback for when the Save button is pressed.
+     *
+     * Saves the comment, creating it if it's new, and closes the dialog.
+     */
+    save: function() {
+        if (this.model.get('canSave')) {
+            this.model.save({
+                error: function(model, xhr) {
+                    alert(gettext('Error saving comment: ') + xhr.errorText);
+                }
+            }, this);
+            this.close();
+        }
     },
 
     /*
@@ -289,7 +324,7 @@ RB.CommentDialogView = Backbone.View.extend({
     open: function() {
         function openDialog() {
             this.$el.scrollIntoView();
-            this._$textField.focus();
+            this._textEditor.focus();
         }
 
         this.$el
@@ -369,7 +404,7 @@ RB.CommentDialogView = Backbone.View.extend({
             showComments = (comments.length > 0),
             width = this.FORM_BOX_WIDTH;
 
-        this._commentsList.setComments(comments,
+        this.commentsList.setComments(comments,
                                        this.model.get('publishedCommentsType'));
         this._$commentsPane.setVisible(showComments);
 
@@ -378,11 +413,6 @@ RB.CommentDialogView = Backbone.View.extend({
         if (showComments) {
             width += this.COMMENTS_BOX_WIDTH;
         }
-
-        /* Don't let the text field bump up the size we set below. */
-        this._$textField
-            .width(10)
-            .height(10);
 
         this.$el
             .width(width)
@@ -398,8 +428,8 @@ RB.CommentDialogView = Backbone.View.extend({
     _handleResize: function() {
         var $draftForm = this._$draftForm,
             $commentsPane = this._$commentsPane,
-            $commentsList = this._commentsList.$el,
-            $textField = this._$textField,
+            $commentsList = this.commentsList.$el,
+            $textField = this._textEditor.$el,
             textFieldPos,
             width = this.$el.width(),
             height = this.$el.height(),
@@ -429,14 +459,14 @@ RB.CommentDialogView = Backbone.View.extend({
 
         textFieldPos = $textField.position();
 
-        $textField
-            .width($draftForm.width() - textFieldPos.left -
-                   $textField.getExtents("bmp", "r"))
-            .height($draftForm.height() - textFieldPos.top -
-                    this._$buttons.outerHeight(true) -
-                    this._$statusField.height() -
-                    this._$issueOptions.height() -
-                    $textField.getExtents("bmp", "b"));
+        this._textEditor.setSize(
+            ($draftForm.width() - textFieldPos.left -
+             $textField.getExtents("bmp", "r")),
+            ($draftForm.height() - textFieldPos.top -
+             this.$buttons.outerHeight(true) -
+             this._$statusField.height() -
+             this._$issueOptions.height() -
+             $textField.getExtents("bmp", "b")));
     },
 
     /*
@@ -458,22 +488,6 @@ RB.CommentDialogView = Backbone.View.extend({
     _onDeleteClicked: function() {
         if (this.model.get('canDelete')) {
             this.model.deleteComment();
-            this.close();
-        }
-    },
-
-    /*
-     * Callback for when the Save button is pressed.
-     *
-     * Saves the comment, creating it if it's new, and closes the dialog.
-     */
-    _onSaveClicked: function() {
-        if (this.model.get('canSave')) {
-            this.model.save({
-                error: function(model, xhr) {
-                    alert(gettext('Error saving comment: ') + xhr.errorText);
-                }
-            }, this);
             this.close();
         }
     },
@@ -509,8 +523,7 @@ RB.CommentDialogView = Backbone.View.extend({
             case $.ui.keyCode.ENTER:
                 /* Enter */
                 if (e.ctrlKey) {
-                    this._ignoreKeyUp = true;
-                    this._onSaveClicked();
+                    this.save();
                     return false;
                 }
                 break;
@@ -520,33 +533,11 @@ RB.CommentDialogView = Backbone.View.extend({
                 /* I */
                 if (e.altKey) {
                     this.model.set('openIssue', !this.model.get('openIssue'));
-                    this._ignoreKeyUp = true;
                 }
                 break;
 
             default:
-                this._ignoreKeyUp = false;
                 break;
-        }
-    },
-
-    /*
-     * Callback for key up events in the text field.
-     *
-     * If the key isn't being ignored due to a special key combination
-     * (Control-S, Alt-I), then we update the model with the new text.
-     */
-    _onTextKeyUp: function(e) {
-        /*
-         * We check if we want to ignore this event. The state from
-         * some shortcuts (control-enter) may not be settled, and we
-         * may end up setting this to dirty, causing page leave
-         * confirmations.
-         */
-        if (!this._ignoreKeyUp) {
-            e.stopPropagation();
-
-            this.model.set('text', this._$textField.val());
         }
     }
 }, {

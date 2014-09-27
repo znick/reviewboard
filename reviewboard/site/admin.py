@@ -23,13 +23,15 @@
 # SOFTWARE OR THE USE OR OTHER DEALINGS IN THE SOFTWARE.
 #
 
+from __future__ import unicode_literals
+
 from django.contrib import admin
 
 from reviewboard.site.models import LocalSite
 
 
 class LocalSiteAdmin(admin.ModelAdmin):
-    list_display = ('name',)
+    list_display = ('name', 'public')
     filter_horizontal = ('users', 'admins')
 
 admin.site.register(LocalSite, LocalSiteAdmin)

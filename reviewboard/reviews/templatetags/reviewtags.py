@@ -1,3 +1,6 @@
+from __future__ import unicode_literals
+
+import json
 import logging
 
 from django import template
@@ -5,20 +8,50 @@ from django.db.models import Q
 from django.template import TemplateSyntaxError
 from django.template.defaultfilters import stringfilter
 from django.template.loader import render_to_string
-from django.utils import simplejson
+from django.utils import six
 from django.utils.html import escape
 from django.utils.translation import ugettext_lazy as _
 from djblets.util.decorators import basictag, blocktag
 from djblets.util.humanize import humanize_list
 
-from reviewboard.accounts.models import Profile
-from reviewboard.diffviewer.models import DiffSet
+from reviewboard.accounts.models import Profile, Trophy
+from reviewboard.reviews.fields import (get_review_request_fieldset,
+                                        get_review_request_fieldsets)
+from reviewboard.reviews.markdown_utils import markdown_escape
 from reviewboard.reviews.models import (BaseComment, Group,
                                         ReviewRequest, ScreenshotComment,
                                         FileAttachmentComment)
 
 
 register = template.Library()
+
+
+@register.tag
+@basictag(takes_context=False)
+def display_review_request_trophies(review_request):
+    """Returns the HTML for the trophies awarded to a review request."""
+    trophy_models = Trophy.objects.get_trophies(review_request)
+
+    if not trophy_models:
+        return ''
+
+    trophies = []
+    for trophy_model in trophy_models:
+        try:
+            trophy_type_cls = trophy_model.trophy_type
+            trophy_type = trophy_type_cls()
+            trophies.append({
+                'image_url': trophy_type.image_url,
+                'image_width': trophy_type.image_width,
+                'image_height': trophy_type.image_height,
+                'text': trophy_type.get_display_text(trophy_model),
+            })
+        except Exception as e:
+            logging.error('Error when rendering trophy %r (%r): %s',
+                          trophy_model.pk, trophy_type_cls, e,
+                          exc_info=1)
+
+    return render_to_string('reviews/trophy_box.html', {'trophies': trophies})
 
 
 @register.tag
@@ -35,7 +68,7 @@ def ifneatnumber(context, nodelist, rid):
     if rid is None or rid < 1000:
         return ""
 
-    ridstr = str(rid)
+    ridstr = six.text_type(rid)
     interesting = False
 
     context.push()
@@ -64,134 +97,6 @@ def ifneatnumber(context, nodelist, rid):
 
 @register.tag
 @basictag(takes_context=True)
-def commentcounts(context, filediff, interfilediff=None):
-    """
-    Returns a JSON array of current comments for a filediff, sorted by
-    line number.
-
-    Each entry in the array has a dictionary containing the following keys:
-
-      =========== ==================================================
-      Key                Description
-      =========== ==================================================
-      comment_id         The ID of the comment
-      text               The text of the comment
-      line               The first line number
-      num_lines          The number of lines this comment spans
-      user               A dictionary containing "username" and "name" keys
-                         for the user
-      url                The URL to the comment
-      localdraft         True if this is the current user's draft comment
-      review_id          The ID of the review this comment is associated with
-      ==============================================================
-    """
-    comment_dict = {}
-    user = context.get('user', None)
-    all_comments = context.get('comments', {})
-
-    if interfilediff:
-        key = (filediff.pk, interfilediff.pk)
-    else:
-        key = (filediff.pk, None)
-
-    comments = all_comments.get(key, [])
-
-    for comment in comments:
-        review = comment.get_review()
-
-        if review and (review.public or review.user == user):
-            key = (comment.first_line, comment.num_lines)
-
-            comment_dict.setdefault(key, []).append({
-                'comment_id': comment.id,
-                'text': escape(comment.text),
-                'line': comment.first_line,
-                'num_lines': comment.num_lines,
-                'user': {
-                    'username': review.user.username,
-                    'name': (review.user.get_full_name() or
-                             review.user.username),
-                },
-                'url': comment.get_review_url(),
-                'localdraft': (review.user == user and
-                               not review.public),
-                'review_id': review.id,
-                'issue_opened': comment.issue_opened,
-                'issue_status': BaseComment.issue_status_to_string(
-                    comment.issue_status),
-            })
-
-    comments_array = []
-
-    for key, value in comment_dict.iteritems():
-        comments_array.append({
-            'linenum': key[0],
-            'num_lines': key[1],
-            'comments': value,
-        })
-
-    comments_array.sort(
-        cmp=lambda x, y: (cmp(x['linenum'], y['linenum'] or
-                          cmp(x['num_lines'], y['num_lines']))))
-
-    return simplejson.dumps(comments_array)
-
-
-@register.tag
-@basictag(takes_context=True)
-def screenshotcommentcounts(context, screenshot):
-    """
-    Returns a JSON array of current comments for a screenshot.
-
-    Each entry in the array has a dictionary containing the following keys:
-
-      ================== ====================================================
-      Key                Description
-      ================== ====================================================
-      text               The text of the comment
-      localdraft         True if this is the current user's draft comment
-      x                  The X location of the comment's region
-      y                  The Y location of the comment's region
-      w                  The width of the comment's region
-      h                  The height of the comment's region
-      review_id          The ID of the review this comment is associated with
-      ================== ====================================================
-    """
-    comments = {}
-    user = context.get('user', None)
-
-    for comment in screenshot.get_comments():
-        review = comment.get_review()
-
-        if review and (review.public or review.user == user):
-            position = '%dx%d+%d+%d' % (comment.w, comment.h,
-                                        comment.x, comment.y)
-
-            comments.setdefault(position, []).append({
-                'comment_id': comment.id,
-                'text': escape(comment.text),
-                'user': {
-                    'username': review.user.username,
-                    'name': (review.user.get_full_name() or
-                             review.user.username),
-                },
-                'url': comment.get_review_url(),
-                'localdraft': review.user == user and not review.public,
-                'x': comment.x,
-                'y': comment.y,
-                'w': comment.w,
-                'h': comment.h,
-                'review_id': review.id,
-                'issue_opened': comment.issue_opened,
-                'issue_status': BaseComment.issue_status_to_string(
-                    comment.issue_status),
-            })
-
-    return simplejson.dumps(comments)
-
-
-@register.tag
-@basictag(takes_context=True)
 def file_attachment_comments(context, file_attachment):
     """Returns a JSON array of current comments for a file attachment."""
     comments = []
@@ -205,19 +110,19 @@ def file_attachment_comments(context, file_attachment):
                 'comment_id': comment.id,
                 'text': escape(comment.text),
                 'user': {
-                    'username': review.user.username,
-                    'name': (review.user.get_full_name() or
-                             review.user.username),
+                    'username': escape(review.user.username),
+                    'name': escape(review.user.get_full_name() or
+                                   review.user.username),
                 },
                 'url': comment.get_review_url(),
                 'localdraft': review.user == user and not review.public,
                 'review_id': review.id,
                 'issue_opened': comment.issue_opened,
-                'issue_status': BaseComment.issue_status_to_string(
-                    comment.issue_status),
+                'issue_status': escape(
+                    BaseComment.issue_status_to_string(comment.issue_status)),
             })
 
-    return simplejson.dumps(comments)
+    return json.dumps(comments)
 
 
 @register.tag
@@ -319,7 +224,7 @@ def reply_section(context, entry, comment, context_type, context_id):
         elif type(comment) is FileAttachmentComment:
             context_id += 'f'
 
-        context_id += str(comment.id)
+        context_id += six.text_type(comment.id)
 
     return {
         'entry': entry,
@@ -331,14 +236,14 @@ def reply_section(context, entry, comment, context_type, context_id):
     }
 
 
-@register.inclusion_tag('reviews/dashboard_entry.html', takes_context=True)
+@register.inclusion_tag('datagrids/dashboard_entry.html', takes_context=True)
 def dashboard_entry(context, level, text, view, param=None):
     """
     Renders an entry in the dashboard sidebar.
 
     This includes the name of the entry and the list of review requests
     associated with it. The entry is rendered by the template
-    :template:`reviews/dashboard_entry.html`.
+    :template:`datagrids/dashboard_entry.html`.
     """
     user = context.get('user', None)
     sidebar_counts = context.get('sidebar_counts', None)
@@ -396,6 +301,96 @@ def reviewer_list(review_request):
                           for user in review_request.target_people.all()])
 
 
+@register.tag
+@blocktag(end_prefix='end_')
+def for_review_request_field(context, nodelist, review_request_details,
+                             fieldset):
+    """Loops through all fields in a fieldset.
+
+    This can take a fieldset instance or a fieldset ID.
+    """
+    s = []
+
+    if isinstance(fieldset, six.text_type):
+        fieldset = get_review_request_fieldset(fieldset)
+
+    for field_cls in fieldset.field_classes:
+        try:
+            field = field_cls(review_request_details)
+        except Exception as e:
+            logging.error('Error instantiating ReviewRequestFieldset %r: %s',
+                          field_cls, e, exc_info=1)
+
+        try:
+            if field.should_render(field.value):
+                context.push()
+                context['field'] = field
+                s.append(nodelist.render(context))
+                context.pop()
+        except Exception as e:
+            logging.error('Error running should_render for '
+                          'ReviewRequestFieldset %r: %s', field_cls, e,
+                          exc_info=1)
+
+    return ''.join(s)
+
+
+@register.tag
+@blocktag(end_prefix='end_')
+def for_review_request_fieldset(context, nodelist, review_request_details):
+    """Loops through all fieldsets.
+
+    This skips the "main" fieldset, as that's handled separately by the
+    template.
+    """
+    s = []
+    is_first = True
+    review_request = review_request_details.get_review_request()
+    user = context['request'].user
+    fieldset_classes = get_review_request_fieldsets(include_main=False)
+
+    for fieldset_cls in fieldset_classes:
+        try:
+            if not fieldset_cls.is_empty():
+                try:
+                    fieldset = fieldset_cls(review_request_details)
+                except Exception as e:
+                    logging.error('Error instantiating ReviewRequestFieldset '
+                                  '%r: %s', fieldset_cls, e, exc_info=1)
+
+                context.push()
+                context.update({
+                    'fieldset': fieldset,
+                    'show_fieldset_required': (
+                        fieldset.show_required and
+                        review_request.status == ReviewRequest.PENDING_REVIEW and
+                        review_request.is_mutable_by(user)),
+                    'forloop': {
+                        'first': is_first,
+                        }
+                })
+                s.append(nodelist.render(context))
+                context.pop()
+
+                is_first = False
+        except Exception as e:
+            logging.error('Error running is_empty for ReviewRequestFieldset '
+                          '%r: %s', fieldset_cls, e, exc_info=1)
+
+    return ''.join(s)
+
+
+@register.assignment_tag
+def has_usable_review_ui(user, review_request, file_attachment):
+    """Returns whether a review UI is set and can be used."""
+    review_ui = file_attachment.review_ui
+
+    return (review_ui and
+            review_ui.is_enabled_for(user=user,
+                                     review_request=review_request,
+                                     file_attachment=file_attachment))
+
+
 @register.filter
 def bug_url(bug_id, review_request):
     """
@@ -415,85 +410,6 @@ def bug_url(bug_id, review_request):
                           review_request.repository.bug_tracker)
 
     return None
-
-
-@register.filter
-def diffsets_with_comments(review, current_pair):
-    """
-    Returns a list of diffsets in the review that contain draft comments.
-    """
-    if not review:
-        return
-
-    diffsets = DiffSet.objects.filter(files__comments__review=review)
-    diffsets = diffsets.filter(files__comments__interfilediff__isnull=True)
-    diffsets = diffsets.distinct()
-
-    for diffset in diffsets:
-        yield {
-            'diffset': diffset,
-            'is_current': (current_pair[0] == diffset and
-                           current_pair[1] is None),
-        }
-
-
-@register.filter
-def interdiffs_with_comments(review, current_pair):
-    """
-    Returns a list of interdiffs in the review that contain draft comments.
-    """
-    if not review:
-        return
-
-    diffsets = DiffSet.objects.filter(files__comments__review=review)
-    diffsets = diffsets.filter(files__comments__interfilediff__isnull=False)
-    diffsets = diffsets.distinct()
-
-    for diffset in diffsets:
-        interdiffs = DiffSet.objects.filter(
-            files__interdiff_comments__filediff__diffset=diffset).distinct()
-
-        for interdiff in interdiffs:
-            yield {
-                'diffset': diffset,
-                'interdiff': interdiff,
-                'is_current': (current_pair[0] == diffset and
-                               current_pair[1] == interdiff),
-            }
-
-
-@register.filter
-def has_comments_in_diffsets_excluding(review, diffset_pair):
-    """
-    Returns whether or not the specified review has any comments that
-    aren't in the specified diffset or interdiff.
-    """
-    if not review:
-        return False
-
-    current_diffset, interdiff = diffset_pair
-
-    # See if there are any diffsets with comments on them in this review.
-    q = DiffSet.objects.filter(files__comments__review=review)
-    q = q.filter(files__comments__interfilediff__isnull=True).distinct()
-
-    if not interdiff:
-        # The user is browsing a standard diffset, so filter it out.
-        q = q.exclude(pk=current_diffset.id)
-
-    if q.count() > 0:
-        return True
-
-    # See if there are any interdiffs with comments on them in this review.
-    q = DiffSet.objects.filter(files__comments__review=review)
-    q = q.filter(files__comments__interfilediff__isnull=False)
-
-    if interdiff:
-        # The user is browsing an interdiff, so filter it out.
-        q = q.exclude(pk=current_diffset.id,
-                      files__comments__interfilediff__diffset=interdiff)
-
-    return q.count() > 0
 
 
 @register.tag
@@ -551,9 +467,9 @@ def render_star(user, obj):
             starred = \
                 profile.starred_groups.filter(pk=obj.id).count() > 0
     else:
-        raise template.TemplateSyntaxError, \
-            "star tag received an incompatible object type (%s)" % \
-            type(obj)
+        raise template.TemplateSyntaxError(
+            "star tag received an incompatible object type (%s)" %
+            type(obj))
 
     if starred:
         image_alt = _("Starred")
@@ -592,3 +508,16 @@ def comment_issue(context, review_request, comment, comment_type):
 def pretty_print_issue_status(status):
     """Turns an issue status code into a human-readable status string."""
     return BaseComment.issue_status_to_string(status)
+
+
+@register.filter('markdown_escape')
+def markdown_escape_filter(text, is_rich_text):
+    """Returns Markdown text, escaping if necessary.
+
+    If ``is_rich_text`` is ``True``, then the provided text will be
+    returned directly. Otherwise, it will first be escaped and then returned.
+    """
+    if is_rich_text:
+        return text
+    else:
+        return markdown_escape(text)

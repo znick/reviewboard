@@ -1,5 +1,4 @@
-{% load djblets_utils %}
-{% load i18n %}
+{% load djblets_utils i18n %}
 
 <table class="sidebyside diff-error{% if file.newfile %} newfile{% endif %}"
        id="file{{file.filediff.id}}">
@@ -55,7 +54,7 @@
 {% endblocktrans %}
     </p>
     <p>
-{% url support as support_url %}
+{% url 'support' as support_url %}
 {% blocktrans %}
      Please try again, and if you still have trouble,
      <a href="{{support_url}}">contact support</a>.

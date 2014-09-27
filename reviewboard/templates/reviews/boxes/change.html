@@ -1,0 +1,65 @@
+{% load djblets_deco djblets_utils i18n reviewtags tz %}
+
+<div class="changedesc">
+ <a name="changedesc{{entry.changedesc.id}}"></a>
+{% definevar "boxclass" %}changedesc {{entry.class}}{% enddefinevar %}
+{% box boxclass %}
+ <div class="box-main">
+  <div class="header">
+   <div class="collapse-button btn"><div class="rb-icon {% if entry.collapsed %}rb-icon-expand-review{% else %}rb-icon-collapse-review{% endif %}"></div></div>
+   <div class="reviewer"><b>{% trans "Review request changed" %}</b></div>
+   <div class="posted_time">{% localtime on %}{% blocktrans with entry.changedesc.timestamp as timestamp and entry.changedesc.timestamp|date:"c" as timestamp_raw %}Updated <time class="timesince" datetime="{{timestamp_raw}}">{{timestamp}}</time> ({{timestamp}}){% endblocktrans %}{% endlocaltime %}</div>
+  </div>
+  <div class="body">
+{%  if entry.new_status %}
+   <h3 class="status">
+    {% trans "Status:" %}
+    <span class="value">
+{%   if entry.new_status == 'submitted' %}
+    {% trans "Closed (submitted)" %}
+{%   elif entry.new_status == 'discarded' %}
+    {% trans "Discarded" %}
+{%   elif entry.new_status == 'pending' %}
+    {% trans "Re-opened" %}
+{%   endif %}
+    </span>
+   </h3>
+{%  endif %}
+
+{%  if entry.changedesc.text %}
+   <h3>{% trans "Change Summary:" %}</h3>
+   <pre class="changedesc-text" data-rich-text="true">{{entry.changedesc.text|markdown_escape:entry.changedesc.rich_text}}</pre>
+{%  endif %}
+
+{%  for group in entry.fields_changed_groups %}
+{%   if group.inline %}
+   <table class="secondary-fields">
+{%  for fieldinfo in group.fields %}
+{%   if fieldinfo.rendered_html %}
+    <tr>
+     <th><h3>{{fieldinfo.title}}:</h3></th>
+     <td>
+      {{fieldinfo.rendered_html}}
+     </td>
+    </tr>
+{%   endif %}
+{%  endfor %}
+   </table>
+{%   else %}
+   <ul class="primary-fields">
+{%    for fieldinfo in group.fields %}
+{%     if fieldinfo.rendered_html %}
+    <li class="clearfix">
+     <h3>{{fieldinfo.title}}:</h3>
+     {{fieldinfo.rendered_html}}
+    </li>
+{%     endif %}
+{%    endfor %}
+   </ul>
+{%   endif %}
+{%  endfor %}
+
+  </div>
+ </div>
+{% endbox %}
+</div>

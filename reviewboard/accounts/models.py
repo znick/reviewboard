@@ -1,15 +1,24 @@
+from __future__ import unicode_literals
+
 from django.contrib.auth.models import User
 from django.db import models
+from django.dispatch import receiver
 from django.utils import timezone
+from django.utils.encoding import python_2_unicode_compatible
+from django.utils.functional import cached_property
 from django.utils.translation import ugettext_lazy as _
-from djblets.util.db import ConcurrencyManager
-from djblets.util.fields import CounterField, JSONField
-from djblets.util.forms import TIMEZONE_CHOICES
+from djblets.db.fields import CounterField, JSONField
+from djblets.db.managers import ConcurrencyManager
+from djblets.forms.fields import TIMEZONE_CHOICES
 
+from reviewboard.accounts.managers import ProfileManager, TrophyManager
+from reviewboard.accounts.trophies import TrophyType
 from reviewboard.reviews.models import Group, ReviewRequest
+from reviewboard.reviews.signals import review_request_published
 from reviewboard.site.models import LocalSite
 
 
+@python_2_unicode_compatible
 class ReviewRequestVisit(models.Model):
     """
     A recording of the last time a review request was visited by a user.
@@ -26,13 +35,14 @@ class ReviewRequestVisit(models.Model):
     # Set this up with a ConcurrencyManager to help prevent race conditions.
     objects = ConcurrencyManager()
 
-    def __unicode__(self):
-        return u"Review request visit"
+    def __str__(self):
+        return "Review request visit"
 
     class Meta:
         unique_together = ("user", "review_request")
 
 
+@python_2_unicode_compatible
 class Profile(models.Model):
     """User profile.  Contains some basic configurable settings"""
     user = models.ForeignKey(User, unique=True)
@@ -46,6 +56,12 @@ class Profile(models.Model):
         help_text=_("Indicates whether the user has already gone through "
                     "the first time setup process by saving their user "
                     "preferences."))
+
+    # Whether the user wants to receive emails
+    should_send_email = models.BooleanField(
+        default=True,
+        verbose_name=_("send email"),
+        help_text=_("Indicates whether the user wishes to receive emails."))
 
     collapsed_diffs = models.BooleanField(
         default=True,
@@ -72,9 +88,9 @@ class Profile(models.Model):
         help_text=_("Indicates whether the user wishes to default "
                     "to opening an issue or not."))
 
-    # Indicate whether submitted review requests should appear in the
+    # Indicate whether closed review requests should appear in the
     # review request lists (excluding the dashboard).
-    show_submitted = models.BooleanField(default=True)
+    show_closed = models.BooleanField(default=True)
 
     sort_review_request_columns = models.CharField(max_length=256, blank=True)
     sort_dashboard_columns = models.CharField(max_length=256, blank=True)
@@ -105,6 +121,8 @@ class Profile(models.Model):
 
     extra_data = JSONField(null=True)
 
+    objects = ProfileManager()
+
     def star_review_request(self, review_request):
         """Marks a review request as starred.
 
@@ -114,11 +132,12 @@ class Profile(models.Model):
         self.starred_review_requests.add(review_request)
 
         if (review_request.public and
-                review_request.status == ReviewRequest.PENDING_REVIEW):
+            (review_request.status == ReviewRequest.PENDING_REVIEW or
+             review_request.status == ReviewRequest.SUBMITTED)):
             site_profile, is_new = LocalSiteProfile.objects.get_or_create(
                 user=self.user,
                 local_site=review_request.local_site,
-                profile=self.user.get_profile())
+                profile=self)
 
             if is_new:
                 site_profile.save()
@@ -139,11 +158,12 @@ class Profile(models.Model):
             self.starred_review_requests.remove(review_request)
 
         if (review_request.public and
-                review_request.status == ReviewRequest.PENDING_REVIEW):
+            (review_request.status == ReviewRequest.PENDING_REVIEW or
+             review_request.status == ReviewRequest.SUBMITTED)):
             site_profile, is_new = LocalSiteProfile.objects.get_or_create(
                 user=self.user,
                 local_site=review_request.local_site,
-                profile=self.user.get_profile())
+                profile=self)
 
             if is_new:
                 site_profile.save()
@@ -170,16 +190,21 @@ class Profile(models.Model):
         if self.starred_groups.filter(pk=review_group.pk).count() > 0:
             self.starred_groups.remove(review_group)
 
-    def __unicode__(self):
+    def __str__(self):
         return self.user.username
 
 
+@python_2_unicode_compatible
 class LocalSiteProfile(models.Model):
     """User profile information specific to a LocalSite."""
     user = models.ForeignKey(User, related_name='site_profiles')
     profile = models.ForeignKey(Profile, related_name='site_profiles')
     local_site = models.ForeignKey(LocalSite, null=True, blank=True,
                                    related_name='site_profiles')
+
+    # A dictionary of permission that the user has granted. Any permission
+    # missing is considered to be False.
+    permissions = JSONField(null=True)
 
     # Counts for quickly knowing how many review requests are incoming
     # (both directly and total), outgoing (pending and total ever made),
@@ -204,27 +229,119 @@ class LocalSiteProfile(models.Model):
         _('starred public review request count'),
         initializer=lambda p: (p.pk and
                                p.profile.starred_review_requests.public(
-                               None, local_site=p.local_site).count()) or 0)
+                                   user=None,
+                                   local_site=p.local_site).count()) or 0)
 
     class Meta:
         unique_together = (('user', 'local_site'),
                            ('profile', 'local_site'))
 
-    def __unicode__(self):
+    def __str__(self):
         return '%s (%s)' % (self.user.username, self.local_site)
 
 
+class Trophy(models.Model):
+    """A trophy represents an achievement given to the user.
+
+    It is associated with a ReviewRequest and a User and can be associated
+    with a LocalSite.
+    """
+    category = models.CharField(max_length=100)
+    received_date = models.DateTimeField(default=timezone.now)
+    review_request = models.ForeignKey(ReviewRequest, related_name="trophies")
+    local_site = models.ForeignKey(LocalSite, null=True,
+                                   related_name="trophies")
+    user = models.ForeignKey(User, related_name="trophies")
+
+    objects = TrophyManager()
+
+    @cached_property
+    def trophy_type(self):
+        """Get the TrophyType instance for this trophy."""
+        return TrophyType.for_category(self.category)
+
+    def get_display_text(self):
+        """Get the display text for this trophy."""
+        return self.trophy_type.get_display_text(self)
+
+
+#
+# The following functions are patched onto the User model.
+#
+
 def _is_user_profile_visible(self, user=None):
-    """Returns whether or not a user's profile is viewable by a given user.
+    """Returns whether or not a User's profile is viewable by a given user.
 
     A profile is viewable if it's not marked as private, or the viewing
     user owns the profile, or the user is a staff member.
     """
     try:
+        if hasattr(self, 'is_private'):
+            # This is an optimization used by the web API. It will set
+            # is_private on this User instance through a query, saving a
+            # lookup for each instance.
+            #
+            # This must be done because select_related() and
+            # prefetch_related() won't cache reverse foreign key relations.
+            is_private = self.is_private
+        else:
+            is_private = self.get_profile().is_private
+
         return ((user and (user == self or user.is_staff)) or
-                not self.get_profile().is_private)
+                not is_private)
     except Profile.DoesNotExist:
         return True
 
+
+def _should_send_email(self):
+    """Returns whether a user wants to receive emails.
+
+    This is patched into the user object to make it easier to deal with missing
+    Profile objects."""
+    try:
+        return self.get_profile().should_send_email
+    except Profile.DoesNotExist:
+        return True
+
+
+def _get_profile(self):
+    """Returns the profile for the User.
+
+    The profile will be cached, preventing queries for future lookups.
+    """
+    if not hasattr(self, '_profile'):
+        self._profile = Profile.objects.get(user=self)
+        self._profile.user = self
+
+    return self._profile
+
+
+def _get_site_profile(self, local_site):
+    """Returns the LocalSiteProfile for a given LocalSite for the User.
+
+    The profile will be cached, preventing queries for future lookups.
+    """
+    if not hasattr(self, '_site_profiles'):
+        self._site_profiles = {}
+
+    if local_site.pk not in self._site_profiles:
+        site_profile = \
+            LocalSiteProfile.objects.get(user=self, local_site=local_site)
+        site_profile.user = self
+        site_profile.local_site = local_site
+        self._site_profiles[local_site.pk] = site_profile
+
+    return self._site_profiles[local_site.pk]
+
+
 User.is_profile_visible = _is_user_profile_visible
+User.get_profile = _get_profile
+User.get_site_profile = _get_site_profile
+User.should_send_email = _should_send_email
 User._meta.ordering = ('username',)
+
+
+@receiver(review_request_published)
+def _call_compute_trophies(sender, review_request, **kwargs):
+    if review_request.changedescs.count() == 0 and review_request.public:
+        Trophy.objects.compute_trophies(review_request)

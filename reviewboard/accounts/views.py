@@ -1,89 +1,73 @@
-from django.conf import settings
-from django.contrib.auth import REDIRECT_FIELD_NAME
+from __future__ import unicode_literals
+
+from django.contrib.auth.decorators import login_required
 from django.core.urlresolvers import reverse
-from django.db import IntegrityError
 from django.http import HttpResponseRedirect
-from django.shortcuts import render_to_response
-from django.template.context import RequestContext
-from djblets.auth.util import login_required
+from django.utils.decorators import method_decorator
+from django.utils.functional import cached_property
+from django.utils.translation import ugettext_lazy as _
+from django.views.decorators.csrf import csrf_protect
 from djblets.auth.views import register
+from djblets.configforms.views import ConfigPagesView
 from djblets.siteconfig.models import SiteConfiguration
+from djblets.util.decorators import augment_method_from
 
-from reviewboard.accounts.backends import get_auth_backends
-from reviewboard.accounts.forms import PreferencesForm, RegistrationForm
-from reviewboard.accounts.models import Profile
-from reviewboard.accounts.signals import user_registered
+from reviewboard.accounts.backends import get_enabled_auth_backends
+from reviewboard.accounts.forms.registration import RegistrationForm
+from reviewboard.accounts.pages import get_page_classes
 
 
+@csrf_protect
 def account_register(request, next_url='dashboard'):
     """
     Handles redirection to the appropriate registration page, depending
     on the authentication type the user has configured.
     """
     siteconfig = SiteConfiguration.objects.get_current()
-    auth_backends = get_auth_backends()
+    auth_backends = get_enabled_auth_backends()
 
     if (auth_backends[0].supports_registration and
             siteconfig.get("auth_enable_registration")):
         response = register(request, next_page=reverse(next_url),
                             form_class=RegistrationForm)
 
-        if request.user.is_authenticated():
-            # This will trigger sending an e-mail notification for
-            # user registration, if enabled.
-            user_registered.send(sender=None, user=request.user)
-
         return response
 
     return HttpResponseRedirect(reverse("login"))
 
 
-@login_required
-def user_preferences(request, template_name='accounts/prefs.html'):
-    # TODO: Figure out the right place to redirect when using a LocalSite.
-    redirect_to = request.REQUEST.get(
-        REDIRECT_FIELD_NAME, request.REQUEST.get('redirect_to', None))
+class MyAccountView(ConfigPagesView):
+    """Displays the My Account page containing user preferences.
 
-    if not redirect_to:
-        redirect_to = reverse("dashboard")
+    The page will be built based on registered pages and forms. This makes
+    it easy to plug in new bits of UI for the page, which is handy for
+    extensions that want to offer customization for users.
+    """
+    title = _('My Account')
 
-    try:
-        profile = request.user.get_profile()
-    except Profile.DoesNotExist:
-        # The Profile didn't exist, but it might have been created since.
-        # Let's try to create one, and if one exists now, we'll just
-        # fetch again.
-        try:
-            profile = Profile.objects.create(user=request.user)
-        except IntegrityError:
-            # This was created since we checked, so load it again.
-            profile = request.user.get_profile()
+    css_bundle_names = [
+        'account-page',
+    ]
 
-    auth_backends = get_auth_backends()
+    js_bundle_names = [
+        '3rdparty-jsonlint',
+        'config-forms',
+        'account-page',
+    ]
 
-    if request.POST:
-        form = PreferencesForm(request.user, request.POST)
+    @method_decorator(login_required)
+    @augment_method_from(ConfigPagesView)
+    def dispatch(self, *args, **kwargs):
+        pass
 
-        if form.is_valid():
-            form.save(request.user)
+    @property
+    def nav_title(self):
+        return self.request.user.username
 
-            return HttpResponseRedirect(redirect_to)
-    else:
-        form = PreferencesForm(request.user, {
-            'settings': settings,
-            'redirect_to': redirect_to,
-            'first_name': request.user.first_name,
-            'last_name': request.user.last_name,
-            'email': request.user.email,
-            'timezone': profile.timezone,
-            'syntax_highlighting': profile.syntax_highlighting,
-            'profile_private': profile.is_private,
-            'open_an_issue': profile.open_an_issue,
-            'groups': [g.id for g in request.user.review_groups.all()],
-        })
+    @property
+    def page_classes(self):
+        return get_page_classes()
 
-    return render_to_response(template_name, RequestContext(request, {
-        'form': form,
-        'settings': settings,
-        'can_change_password': auth_backends[0].supports_change_password,
-    }))
+    @cached_property
+    def ordered_user_local_sites(self):
+        return self.request.user.local_site.order_by('name')

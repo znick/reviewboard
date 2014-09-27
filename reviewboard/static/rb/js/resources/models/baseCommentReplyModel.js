@@ -10,6 +10,9 @@ RB.BaseCommentReply = RB.BaseResource.extend({
         /* The ID of the comment being replied to. */
         replyToID: null,
 
+        /* Whether the reply text is saved in rich-text (Markdown) format. */
+        richText: false,
+
         /* The text entered for the comment. */
         text: ''
     }, RB.BaseResource.prototype.defaults),
@@ -34,7 +37,8 @@ RB.BaseCommentReply = RB.BaseResource.extend({
      */
     toJSON: function() {
         var data = {
-            text: this.get('text')
+            text: this.get('text'),
+            text_type: this.get('richText') ? 'markdown' : 'plain'
         };
 
         if (!this.get('loaded')) {
@@ -51,7 +55,8 @@ RB.BaseCommentReply = RB.BaseResource.extend({
      */
     parseResourceData: function(rsp) {
         return {
-            text: rsp.text
+            text: rsp.text,
+            richText: rsp.text_type === 'markdown'
         };
     },
 

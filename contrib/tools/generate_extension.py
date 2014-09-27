@@ -1,15 +1,20 @@
 #!/usr/bin/env python
+
+from __future__ import print_function, unicode_literals
+
 import os
 import re
 from optparse import OptionParser
 
+from django.utils.six.moves import input
 from jinja2 import Environment, PackageLoader
 
 from reviewboard import get_version_string
 
 
-env = Environment(loader=PackageLoader('reviewboard',
-    '../contrib/tools/templates/extensions'))
+env = Environment(
+    loader=PackageLoader(
+        'reviewboard', '../contrib/tools/templates/extensions'))
 
 options = None
 
@@ -21,7 +26,7 @@ def get_confirmation(question):
     point it will return True if it was a 'y'.
     """
     while True:
-        response = raw_input("%s (y/n): " % question).lower()
+        response = input("%s (y/n): " % question).lower()
         if re.match(r'^[yn]', response) is not None:
             break
         print("Incorrect option '%s'" % response)
@@ -99,11 +104,11 @@ def get_formatted_string(string_type, string, fallback, case):
         question = "Do you wish to use %s as the %s?" % \
                    (string, string_type)
         if not get_confirmation(question):
-            string = raw_input("Please input a %s: " % string_type)
+            string = input("Please input a %s: " % string_type)
 
     while not case.formatted(string):
         print("'%s' is not a valid %s." % (string, string_type))
-        string = raw_input("Please input a valid %s: " % string_type)
+        string = input("Please input a valid %s: " % string_type)
 
     return string
 
@@ -119,7 +124,7 @@ def parse_options():
                       help="class name of extension (capitalized no spaces)")
     parser.add_option("--package-name",
                       dest="package_name", default=None,
-                      help="package name of extension (lower case with " \
+                      help="package name of extension (lower case with "
                            "underscores)")
     parser.add_option("--description",
                       dest="description", default=None,
@@ -127,11 +132,6 @@ def parse_options():
     parser.add_option("--author",
                       dest="author", default=None,
                       help="author of the extension")
-    parser.add_option("--dashboard-link",
-                      dest="dashboard_link", default=None,
-                      metavar="DASHBOARD_lINK_LABEL",
-                      help="creates a dashboard link with this name in the " \
-                           "review requests sidebar (optional)")
     parser.add_option("--is-configurable",
                       dest="is_configurable", action="store_true",
                       default=False,
@@ -225,15 +225,6 @@ def main():
                          "{{PACKAGE}}/__init__.py")
     builder.add_template("extension/admin_urls.py",
                          "{{PACKAGE}}/admin_urls.py")
-
-    if options.dashboard_link is not None:
-        builder.add_template("extension/urls.py",
-                             "{{PACKAGE}}/urls.py")
-        builder.add_template("extension/templates/extension/dashboard.html",
-                             "{{PACKAGE}}/templates/{{PACKAGE}}/dashboard.html"
-                             )
-        builder.add_template("extension/views.py",
-                             "{{PACKAGE}}/views.py")
 
     if options.is_configurable:
         builder.add_template("extension/templates/extension/configure.html",

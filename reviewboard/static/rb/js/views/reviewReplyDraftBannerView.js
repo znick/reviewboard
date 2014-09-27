@@ -22,7 +22,7 @@ RB.ReviewReplyDraftBannerView = RB.FloatingBannerView.extend({
      * Renders the banner.
      */
     render: function() {
-        RB.FloatingBannerView.prototype.render.call(this);
+        _super(this).render.call(this);
 
         this.$el.html(this.template({
             draftText: gettext('This reply is a draft.')
@@ -30,6 +30,14 @@ RB.ReviewReplyDraftBannerView = RB.FloatingBannerView.extend({
 
         this.model.on('saving destroying', function() {
             this.$('input').prop('disabled', true);
+        }, this);
+
+        this.model.on('saved', function() {
+            this.$('input').prop('disabled', false);
+        }, this);
+
+        this.model.on('publishError', function(errorText) {
+            alert(errorText);
         }, this);
 
         return this;
@@ -41,7 +49,11 @@ RB.ReviewReplyDraftBannerView = RB.FloatingBannerView.extend({
      * Publishes the reply.
      */
     _onPublishClicked: function() {
-        this.model.publish();
+        this.model.publish({
+            error: function(model, xhr) {
+                this.model.trigger('publishError', xhr.errorText);
+            }
+        }, this);
     },
 
     /*

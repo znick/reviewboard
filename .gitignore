@@ -27,13 +27,10 @@ settings_local.py
 django.mo
 djangojs.mo
 
-# Generated media files
-reviewboard/static/rb/css/*.css
-reviewboard/htdocs/static/
-
 # Directories/symlinks
 reviewboard/htdocs/media/djblets
 reviewboard/htdocs/media/uploaded
+docs/manual/data/htdocs/media/uploaded/
 _build
 build
 dist
@@ -42,3 +39,4 @@ pickle
 temp
 .idea
 bak
+reviewboard/scmtools/testdata/hg_repo/.hg/cache/branch2-served

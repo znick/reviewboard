@@ -1,4 +1,4 @@
-describe('resources/models/BaseCommentReply', function() {
+suite('rb/resources/models/BaseCommentReply', function() {
     var parentObject,
         model;
 
@@ -42,13 +42,15 @@ describe('resources/models/BaseCommentReply', function() {
                 stat: 'ok',
                 my_comment: {
                     id: 42,
-                    text: 'foo'
+                    text: 'foo',
+                    text_type: 'markdown'
                 }
             });
 
             expect(data).not.toBe(undefined);
             expect(data.id).toBe(42);
             expect(data.text).toBe('foo');
+            expect(data.richText).toBe(true);
         });
     });
 
@@ -74,6 +76,16 @@ describe('resources/models/BaseCommentReply', function() {
                 });
                 data = model.toJSON();
                 expect(data.reply_to_id).toBe(10);
+            });
+        });
+
+        describe('richText field', function() {
+            it('With value', function() {
+                var data;
+
+                model.set('richText', true);
+                data = model.toJSON();
+                expect(data.text_type).toBe('markdown');
             });
         });
 

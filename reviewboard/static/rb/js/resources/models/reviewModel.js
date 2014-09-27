@@ -7,23 +7,30 @@
 RB.Review = RB.BaseResource.extend({
     defaults: _.defaults({
         shipIt: false,
-        public: false,
+        'public': false,
+        richText: false,
         bodyTop: null,
         bodyBottom: null,
-        draftReply: null
+        draftReply: null,
+        timestamp: null
     }, RB.BaseResource.prototype.defaults),
 
     rspNamespace: 'review',
 
+    extraQueryArgs: {
+        'force-text-type': 'markdown'
+    },
+
     toJSON: function() {
         var data = {
-            ship_it: (this.get('shipIt') ? 1 : 0),
+            text_type: this.get('richText') ? 'markdown' : 'plain',
+            ship_it: this.get('shipIt'),
             body_top: this.get('bodyTop'),
             body_bottom: this.get('bodyBottom')
         };
 
         if (this.get('public')) {
-            data.public = 1;
+            data['public'] = 1;
         }
 
         return data;
@@ -34,7 +41,9 @@ RB.Review = RB.BaseResource.extend({
             shipIt: rsp.ship_it,
             bodyTop: rsp.body_top,
             bodyBottom: rsp.body_bottom,
-            public: rsp.public
+            'public': rsp['public'],
+            richText: rsp.text_type === 'markdown',
+            timestamp: rsp.timestamp
         };
     },
 
@@ -82,6 +91,9 @@ RB.Review = RB.BaseResource.extend({
             this.set('draftReply', draftReply);
 
             draftReply.once('published', function() {
+                var reviewRequest = this.get('parentObject');
+
+                reviewRequest.markUpdated(draftReply.get('timestamp'));
                 this.set('draftReply', null);
             }, this);
         }

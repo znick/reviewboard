@@ -1,38 +1,41 @@
+from __future__ import unicode_literals
+
 from django.conf import settings
 from django.contrib.auth.models import User
 from django.core import mail
-from django.test import TestCase
 from djblets.siteconfig.models import SiteConfiguration
+from djblets.testing.decorators import add_fixtures
 
-from reviewboard import initialize
 from reviewboard.admin.siteconfig import load_site_config
 from reviewboard.notifications.email import (build_email_address,
                                              get_email_address_for_user,
                                              get_email_addresses_for_group)
 from reviewboard.reviews.models import Group, Review, ReviewRequest
+from reviewboard.site.models import LocalSite
+from reviewboard.testing import TestCase
 
 
 class EmailTestHelper(object):
-    def assertValidRecipients(self, user_list, group_list):
+    def assertValidRecipients(self, user_list, group_list=[]):
         recipient_list = mail.outbox[0].to + mail.outbox[0].cc
         self.assertEqual(len(recipient_list), len(user_list) + len(group_list))
 
         for user in user_list:
             self.assertTrue(get_email_address_for_user(
                 User.objects.get(username=user)) in recipient_list,
-                u"user %s was not found in the recipient list" % user)
+                "user %s was not found in the recipient list" % user)
 
         groups = Group.objects.filter(name__in=group_list, local_site=None)
         for group in groups:
             for address in get_email_addresses_for_group(group):
                 self.assertTrue(
                     address in recipient_list,
-                    u"group %s was not found in the recipient list" % address)
+                    "group %s was not found in the recipient list" % address)
 
 
 class UserEmailTests(TestCase, EmailTestHelper):
     def setUp(self):
-        initialize()
+        super(UserEmailTests, self).setUp()
 
         mail.outbox = []
         self.sender = 'noreply@example.com'
@@ -46,9 +49,6 @@ class UserEmailTests(TestCase, EmailTestHelper):
         """
         Testing sending an e-mail after a new user has successfully registered.
         """
-        # Clear the outbox.
-        mail.outbox = []
-
         new_user_info = {
             'username': 'NewUser',
             'password1': 'password',
@@ -80,11 +80,10 @@ class UserEmailTests(TestCase, EmailTestHelper):
 
 class ReviewRequestEmailTests(TestCase, EmailTestHelper):
     """Tests the e-mail support."""
-    fixtures = ['test_users', 'test_reviewrequests', 'test_scmtools',
-                'test_site']
+    fixtures = ['test_users']
 
     def setUp(self):
-        initialize()
+        super(ReviewRequestEmailTests, self).setUp()
 
         mail.outbox = []
         self.sender = 'noreply@example.com'
@@ -95,84 +94,157 @@ class ReviewRequestEmailTests(TestCase, EmailTestHelper):
         siteconfig.save()
         load_site_config()
 
-    def testNewReviewRequestEmail(self):
+    def test_new_review_request_email(self):
         """Testing sending an e-mail when creating a new review request"""
-        review_request = ReviewRequest.objects.get(
-            summary="Made e-mail improvements")
+        review_request = self.create_review_request(
+            summary='My test review request')
+        review_request.target_people.add(User.objects.get(username='grumpy'))
+        review_request.target_people.add(User.objects.get(username='doc'))
         review_request.publish(review_request.submitter)
+
         from_email = get_email_address_for_user(review_request.submitter)
 
         self.assertEqual(len(mail.outbox), 1)
         self.assertEqual(mail.outbox[0].from_email, self.sender)
         self.assertEqual(mail.outbox[0].extra_headers['From'], from_email)
         self.assertEqual(mail.outbox[0].subject,
-                         "Review Request 4: Made e-mail improvements")
-        self.assertValidRecipients(["grumpy", "doc"], [])
+                         'Review Request %s: My test review request'
+                         % review_request.pk)
+        self.assertValidRecipients(['grumpy', 'doc'])
 
         message = mail.outbox[0].message()
-        print review_request.submitter
         self.assertEqual(message['Sender'],
                          self._get_sender(review_request.submitter))
 
-    def testReviewEmail(self):
+    def test_review_email(self):
         """Testing sending an e-mail when replying to a review request"""
-        review_request = ReviewRequest.objects.get(
-            summary="Add permission checking for JSON API")
+        review_request = self.create_review_request(
+            summary='My test review request')
+        review_request.target_people.add(User.objects.get(username='grumpy'))
+        review_request.target_people.add(User.objects.get(username='doc'))
         review_request.publish(review_request.submitter)
 
         # Clear the outbox.
         mail.outbox = []
 
-        review = Review.objects.get(review_request=review_request,
-                                    user__username="doc",
-                                    base_reply_to__isnull=True)
-        self.assertEqual(review.body_top, "Test")
+        review = self.create_review(review_request=review_request)
         review.publish()
 
         from_email = get_email_address_for_user(review.user)
 
         self.assertEqual(len(mail.outbox), 1)
-        self.assertEqual(mail.outbox[0].from_email, self.sender)
-        self.assertEqual(mail.outbox[0].extra_headers['From'], from_email)
-        self.assertEqual(mail.outbox[0].subject,
-                         "Re: Review Request 3: Add permission checking " +
-                         "for JSON API")
-        self.assertValidRecipients(["admin", "doc", "dopey", "grumpy"], [])
+        email = mail.outbox[0]
+        self.assertEqual(email.from_email, self.sender)
+        self.assertEqual(email.extra_headers['From'], from_email)
+        self.assertEqual(email.extra_headers['X-ReviewBoard-URL'],
+                         'http://example.com/')
+        self.assertEqual(email.extra_headers['X-ReviewRequest-URL'],
+                         'http://example.com/r/%s/'
+                         % review_request.display_id)
+        self.assertEqual(email.subject,
+                         'Re: Review Request %s: My test review request'
+                         % review_request.display_id)
+        self.assertValidRecipients([
+            review_request.submitter.username,
+            'grumpy',
+            'doc',
+        ])
 
-        message = mail.outbox[0].message()
+        message = email.message()
         self.assertEqual(message['Sender'], self._get_sender(review.user))
 
-    def test_review_close_no_email(self):
-        """Tests email is not generated when a review is closed and email setting is False"""
-        user1 = User.objects.get(username="dopey")
-        review_request = ReviewRequest.objects.create(user1, None)
-        review_request.summary = "Test no email notification on close"
-        review_request.publish(user1)
+    @add_fixtures(['test_site'])
+    def test_review_email_with_site(self):
+        """Testing sending an e-mail when replying to a review request
+        on a Local Site
+        """
+        review_request = self.create_review_request(
+            summary='My test review request',
+            with_local_site=True)
+        review_request.target_people.add(User.objects.get(username='grumpy'))
+        review_request.target_people.add(User.objects.get(username='doc'))
+        review_request.publish(review_request.submitter)
+
+        # Ensure all the reviewers are on the site.
+        site = review_request.local_site
+        site.users.add(*list(review_request.target_people.all()))
 
         # Clear the outbox.
         mail.outbox = []
 
-        review_request.close(ReviewRequest.SUBMITTED, user1)
+        review = self.create_review(review_request=review_request)
+        review.publish()
+
+        from_email = get_email_address_for_user(review.user)
+
+        self.assertEqual(len(mail.outbox), 1)
+        email = mail.outbox[0]
+        self.assertEqual(email.from_email, self.sender)
+        self.assertEqual(email.extra_headers['From'], from_email)
+        self.assertEqual(email.extra_headers['X-ReviewBoard-URL'],
+                         'http://example.com/s/local-site-1/')
+        self.assertEqual(email.extra_headers['X-ReviewRequest-URL'],
+                         'http://example.com/s/local-site-1/r/%s/'
+                         % review_request.display_id)
+        self.assertEqual(email.subject,
+                         'Re: Review Request %s: My test review request'
+                         % review_request.display_id)
+        self.assertValidRecipients([
+            review_request.submitter.username,
+            'grumpy',
+            'doc',
+        ])
+
+        message = email.message()
+        self.assertEqual(message['Sender'], self._get_sender(review.user))
+
+    def test_profile_should_send_email_setting(self):
+        """Testing the Profile.should_send_email setting"""
+        grumpy = User.objects.get(username='grumpy')
+        profile = grumpy.get_profile()
+        profile.should_send_email = False
+        profile.save()
+
+        review_request = self.create_review_request(
+            summary='My test review request')
+        review_request.target_people.add(grumpy)
+        review_request.target_people.add(User.objects.get(username='doc'))
+        review_request.publish(review_request.submitter)
+
+        self.assertEqual(len(mail.outbox), 1)
+        self.assertValidRecipients(['doc'])
+
+    def test_review_close_no_email(self):
+        """Tests e-mail is not generated when a review is closed and e-mail
+        setting is False
+        """
+        review_request = self.create_review_request()
+        review_request.publish(review_request.submitter)
+
+        # Clear the outbox.
+        mail.outbox = []
+
+        review_request.close(ReviewRequest.SUBMITTED, review_request.submitter)
 
         # Verify that no email is generated as option is false by default
         self.assertEqual(len(mail.outbox), 0)
 
     def test_review_close_with_email(self):
-        """Tests email is generated when a review is closed and email setting is True"""
+        """Tests e-mail is generated when a review is closed and e-mail setting
+        is True
+        """
         siteconfig = SiteConfiguration.objects.get_current()
         siteconfig.set("mail_send_review_close_mail", True)
         siteconfig.save()
         load_site_config()
 
-        user1 = User.objects.get(username="dopey")
-        review_request = ReviewRequest.objects.create(user1, None)
-        review_request.summary = "Test email notification on close"
-        review_request.publish(user1)
+        review_request = self.create_review_request()
+        review_request.publish(review_request.submitter)
 
         # Clear the outbox.
         mail.outbox = []
 
-        review_request.close(ReviewRequest.SUBMITTED, user1)
+        review_request.close(ReviewRequest.SUBMITTED, review_request.submitter)
 
         self.assertEqual(len(mail.outbox), 1)
         message = mail.outbox[0].message()
@@ -184,22 +256,19 @@ class ReviewRequestEmailTests(TestCase, EmailTestHelper):
         siteconfig.save()
         load_site_config()
 
-    def testReviewReplyEmail(self):
+    def test_review_reply_email(self):
         """Testing sending an e-mail when replying to a review"""
-        review_request = ReviewRequest.objects.get(
-            summary="Add permission checking for JSON API")
+        review_request = self.create_review_request(
+            summary='My test review request')
         review_request.publish(review_request.submitter)
 
-        base_review = Review.objects.get(review_request=review_request,
-                                         user__username="doc",
-                                         base_reply_to__isnull=True)
+        base_review = self.create_review(review_request=review_request)
         base_review.publish()
 
         # Clear the outbox.
         mail.outbox = []
 
-        reply = Review.objects.get(base_reply_to=base_review,
-                                   user__username="dopey")
+        reply = self.create_reply(base_review)
         reply.publish()
 
         from_email = get_email_address_for_user(reply.user)
@@ -208,17 +277,25 @@ class ReviewRequestEmailTests(TestCase, EmailTestHelper):
         self.assertEqual(mail.outbox[0].from_email, self.sender)
         self.assertEqual(mail.outbox[0].extra_headers['From'], from_email)
         self.assertEqual(mail.outbox[0].subject,
-                         "Re: Review Request 3: Add permission checking " +
-                         "for JSON API")
-        self.assertValidRecipients(["admin", "doc", "dopey", "admin"], [])
+                         'Re: Review Request %s: My test review request'
+                         % review_request.pk)
+        self.assertValidRecipients([
+            review_request.submitter.username,
+            base_review.user.username,
+            reply.user.username,
+        ])
 
         message = mail.outbox[0].message()
         self.assertEqual(message['Sender'], self._get_sender(reply.user))
 
-    def testUpdateReviewRequestEmail(self):
+    def test_update_review_request_email(self):
         """Testing sending an e-mail when updating a review request"""
-        review_request = ReviewRequest.objects.get(
-            summary="Update for cleaned_data changes")
+        group = Group.objects.create(name='devgroup',
+                                     mailing_list='devgroup@example.com')
+
+        review_request = self.create_review_request(
+            summary='My test review request')
+        review_request.target_groups.add(group)
         review_request.email_message_id = "junk"
         review_request.publish(review_request.submitter)
 
@@ -228,9 +305,84 @@ class ReviewRequestEmailTests(TestCase, EmailTestHelper):
         self.assertEqual(mail.outbox[0].from_email, self.sender)
         self.assertEqual(mail.outbox[0].extra_headers['From'], from_email)
         self.assertEqual(mail.outbox[0].subject,
-                         "Re: Review Request 2: Update for cleaned_data "
-                         "changes")
-        self.assertValidRecipients(["dopey", "doc"], ["devgroup"])
+                         'Re: Review Request %s: My test review request'
+                         % review_request.pk)
+        self.assertValidRecipients([review_request.submitter.username],
+                                   ['devgroup'])
+
+        message = mail.outbox[0].message()
+        self.assertEqual(message['Sender'],
+                         self._get_sender(review_request.submitter))
+
+    def test_local_site_user_filters(self):
+        """Testing sending e-mails and filtering out users not on a local site
+        """
+        test_site = LocalSite.objects.create(name=self.local_site_name)
+
+        site_user1 = User.objects.create(
+            username='site_user1',
+            email='site_user1@example.com')
+        site_user2 = User.objects.create(
+            username='site_user2',
+            email='site_user2@example.com')
+        site_user3 = User.objects.create(
+            username='site_user3',
+            email='site_user3@example.com')
+        site_user4 = User.objects.create(
+            username='site_user4',
+            email='site_user4@example.com')
+        site_user5 = User.objects.create(
+            username='site_user5',
+            email='site_user5@example.com')
+        non_site_user1 = User.objects.create(
+            username='non_site_user1',
+            email='non_site_user1@example.com')
+        non_site_user2 = User.objects.create(
+            username='non_site_user2',
+            email='non_site_user2@example.com')
+        non_site_user3 = User.objects.create(
+            username='non_site_user3',
+            email='non_site_user3@example.com')
+
+        test_site.admins.add(site_user1)
+        test_site.users.add(site_user2)
+        test_site.users.add(site_user3)
+        test_site.users.add(site_user4)
+        test_site.users.add(site_user5)
+
+        group = Group.objects.create(name='my-group',
+                                     display_name='My Group',
+                                     local_site=test_site)
+        group.users.add(site_user5)
+        group.users.add(non_site_user3)
+
+        review_request = self.create_review_request(with_local_site=True,
+                                                    local_id=123)
+        review_request.email_message_id = "junk"
+        review_request.target_people = [site_user1, site_user2, site_user3,
+                                        non_site_user1]
+        review_request.target_groups = [group]
+
+        review = Review.objects.create(review_request=review_request,
+                                       user=site_user4)
+        review.publish()
+
+        review = Review.objects.create(review_request=review_request,
+                                       user=non_site_user2)
+        review.publish()
+
+        from_email = get_email_address_for_user(review_request.submitter)
+
+        # Now that we're set up, send another e-mail.
+        mail.outbox = []
+        review_request.publish(review_request.submitter)
+
+        self.assertEqual(len(mail.outbox), 1)
+        self.assertEqual(mail.outbox[0].from_email, self.sender)
+        self.assertEqual(mail.outbox[0].extra_headers['From'], from_email)
+        self.assertValidRecipients(
+            ['site_user1', 'site_user2', 'site_user3', 'site_user4',
+             'site_user5', review_request.submitter.username], [])
 
         message = mail.outbox[0].message()
         self.assertEqual(message['Sender'],

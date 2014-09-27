@@ -17,9 +17,18 @@ RB.BaseComment = RB.BaseResource.extend({
          */
         issueStatus: null,
 
+        /* Whether the comment is saved in rich-text (Markdown) format. */
+        richText: false,
+
         /* The text entered for the comment. */
         text: ''
     }, RB.BaseResource.prototype.defaults),
+
+    extraQueryArgs: {
+        'force-text-type': 'markdown'
+    },
+
+    supportsExtraData: true,
 
     /*
      * Destroys the comment if and only if the text is empty.
@@ -40,26 +49,17 @@ RB.BaseComment = RB.BaseResource.extend({
      * This must be overloaded by subclasses, and the parent version called.
      */
     toJSON: function() {
-        var data = {
-                text: this.get('text'),
-                issue_opened: this.get('issueOpened')
-            },
-            parentObject,
-            isPublic;
+        var data = _.defaults({
+                issue_opened: this.get('issueOpened'),
+                text_type: this.get('richText') ? 'markdown' : 'plain',
+                text: this.get('text')
+            }, RB.BaseResource.prototype.toJSON.call(this)),
+            parentObject;
 
         if (this.get('loaded')) {
             parentObject = this.get('parentObject');
 
-            /*
-             * XXX This is temporary to support older-style resource
-             *     objects. We should just use get() once we're moved
-             *     entirely onto BaseResource.
-             */
-            isPublic = parentObject.cid
-                       ? parentObject.get('public')
-                       : parentObject.public;
-
-            if (isPublic) {
+            if (parentObject.get('public')) {
                 data.issue_status = this.get('issueStatus');
             }
         }
@@ -76,6 +76,7 @@ RB.BaseComment = RB.BaseResource.extend({
         return {
             issueOpened: rsp.issue_opened,
             issueStatus: rsp.issue_status,
+            richText: rsp.text_type === 'markdown',
             text: rsp.text
         };
     },
@@ -98,6 +99,8 @@ RB.BaseComment = RB.BaseResource.extend({
             attrs.issueStatus !== RB.BaseComment.STATE_RESOLVED) {
             return RB.BaseComment.strings.INVALID_ISSUE_STATUS;
         }
+
+        return RB.BaseResource.prototype.validate.apply(this, arguments);
     }
 }, {
     STATE_DROPPED: 'dropped',

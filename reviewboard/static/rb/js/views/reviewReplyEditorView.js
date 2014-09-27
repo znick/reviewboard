@@ -1,7 +1,7 @@
 /*
  * Handles editing a reply to a comment in a review.
  *
- * This will handle the "Add Comment" link and the draft banners for the
+ * This will handle the "New Comment" link and the draft banners for the
  * review.
  */
 RB.ReviewReplyEditorView = Backbone.View.extend({
@@ -20,7 +20,8 @@ RB.ReviewReplyEditorView = Backbone.View.extend({
         '<% } %>',
         '   </label>',
         '  </dt>',
-        '  <dd><pre id="<%= id %>" class="reviewtext"><%- text %></pre></dd>',
+        '  <dd><pre id="<%= id %>" class="reviewtext rich-text"',
+        '           data-rich-text="true"><%- text %></pre></dd>',
         ' </dl>',
         '</li>'
     ].join('')),
@@ -40,7 +41,7 @@ RB.ReviewReplyEditorView = Backbone.View.extend({
      * Renders the comment section.
      *
      * If there were any draft comments found, then editors will be
-     * created for them, the Add Comment link will be hidden.
+     * created for them, the New Comment link will be hidden.
      */
     render: function() {
         var $draftComment,
@@ -68,7 +69,8 @@ RB.ReviewReplyEditorView = Backbone.View.extend({
             var reviewRequest = this.model.get('review').get('parentObject');
 
             if (this._$editor) {
-                RB.formatText(this._$editor, text, reviewRequest.get('bugTrackerURL'));
+                RB.formatText(this._$editor, text,
+                              reviewRequest.get('bugTrackerURL'));
             }
         }, this);
 
@@ -103,12 +105,12 @@ RB.ReviewReplyEditorView = Backbone.View.extend({
         this._$draftComment = $draftComment;
 
         this._$editor = $draftComment.find('pre.reviewtext')
-            .inlineEditor({
+            .inlineEditor(_.extend({
                 cls: 'inline-comment-editor',
                 editIconClass: 'rb-icon rb-icon-edit',
                 notifyUnchangedCompletion: true,
                 multiline: true
-            })
+            }, RB.MarkdownEditorView.getInlineEditorOptions()))
             .on({
                 beginEdit: function() {
                     if (pageEditState) {
@@ -124,6 +126,10 @@ RB.ReviewReplyEditorView = Backbone.View.extend({
                     this.model.save();
                 }, this),
                 cancel: _.bind(function() {
+                    $draftComment.find('pre.reviewtext')
+                                 .inlineEditor('buttons')
+                                 .find('.markdown-info')
+                                 .remove();
                     if (pageEditState) {
                         pageEditState.decr('editCount');
                     }
@@ -140,13 +146,14 @@ RB.ReviewReplyEditorView = Backbone.View.extend({
      */
     _makeCommentElement: function(options) {
         var userSession = RB.UserSession.instance,
-            now;
+            reviewRequest = this.model.get('review').get('parentObject'),
+            now,
+            $el;
 
         options = options || {};
         now = options.now || moment().zone(userSession.get('timezoneOffset'));
 
-        return (
-            $(this.commentTemplate(_.extend({
+        $el = $(this.commentTemplate(_.extend({
                 id: _.uniqueId('draft_comment_'),
                 text: '',
                 commentID: null,
@@ -168,12 +175,18 @@ RB.ReviewReplyEditorView = Backbone.View.extend({
             .find('time.timesince')
                 .timesince()
             .end()
-            .appendTo(this._$commentsList)
-        );
+            .appendTo(this._$commentsList);
+
+        if (options.text) {
+            RB.formatText($el.find('.reviewtext'), options.text,
+                          reviewRequest.get('bugTrackerURL'));
+        }
+
+        return $el;
     },
 
     /*
-     * Handler for when the Add Comment link is clicked.
+     * Handler for when the New Comment link is clicked.
      *
      * Creates a new comment form and editor.
      */
@@ -188,7 +201,7 @@ RB.ReviewReplyEditorView = Backbone.View.extend({
      * Handler for when the reply is published.
      *
      * Updates the draft comment to be a standard comment, and brings back
-     * the Add Comment link.
+     * the New Comment link.
      */
     _onPublished: function() {
         if (this._$draftComment) {

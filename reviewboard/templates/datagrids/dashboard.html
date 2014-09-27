@@ -1,0 +1,20 @@
+{% extends "datagrids/datagrid.html" %}
+{% load compressed djblets_deco i18n staticfiles %}
+
+{% block title %}{% trans "My Dashboard" %}{% endblock %}
+
+{% block bodytag %}<body id="dashboard_page">{% endblock %}
+
+{% block scripts-post %}
+{{block.super}}
+{%  compressed_js "dashboard" %}
+<script type="text/javascript">
+    $(document).ready(function() {
+        var dashboardView = new RB.DashboardView({
+            el: $('#dashboard_container'),
+            model: new RB.Dashboard()
+        });
+        dashboardView.render();
+    });
+</script>
+{% endblock scripts-post %}

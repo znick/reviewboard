@@ -30,28 +30,27 @@ RB.FileAttachmentThumbnail = Backbone.View.extend({
     className: 'file-container',
 
     events: {
-        'click a.delete': '_onDeleteClicked',
-        'click .file-add-comment a': '_onAddCommentClicked',
-        'click .file-review-inline a': '_onInlineReviewClicked'
+        'click .delete': '_onDeleteClicked',
+        'click .file-add-comment a': '_onAddCommentClicked'
     },
 
     template: _.template([
         '<div class="file">',
         ' <ul class="actions" />',
         ' <div class="file-header">',
-        '  <a class="download" href="<%= downloadURL %>">',
-        '   <img class="icon" src="<%= iconURL %>" />',
-        '   <span class="filename"><%= filename %></span>',
+        '  <a class="download">',
+        '   <img class="icon" />',
+        '   <span class="filename"><%- filename %></span>',
         '  </a>',
-        '  <a href="#" class="delete rb-icon rb-icon-delete"',
-        '     title="<%- deleteFileText %>"></a>',
         ' </div>',
         ' <div class="file-thumbnail-container" />',
-        ' <div class="file-caption">',
-        '  <a href="<%= downloadURL %>" "',
-        '     class="edit <% if (!caption) { %>empty-caption<% } %>">',
-        '   <% if (caption) { %><%= caption %><% } else { %><%- noCaptionText %><% } %>',
-        '  </a>',
+        ' <div class="file-caption-container">',
+        '  <div class="file-caption can-edit">', /* spaceless */
+        '<a href="<%- downloadURL %>"',
+        '   class="edit <% if (!caption) { %>empty-caption<% } %>">',
+        '<% if (caption) { %><%- caption %><% } else { %><%- noCaptionText %><% } %>',
+        '</a>',
+        '</div>', /* endspaceless */
         ' </div>',
         '</div>'
     ].join('')),
@@ -59,26 +58,35 @@ RB.FileAttachmentThumbnail = Backbone.View.extend({
     actionsTemplate: _.template([
         '<% if (loaded) { %>',
         '<%   if (reviewURL) { %>',
-        ' <li class="file-review"><a href="<%= reviewURL %>"><%- reviewText %></a></li>',
+        ' <li class="file-review"><a href="<%- reviewURL %>"><%- reviewText %></a></li>',
         '<%   } else { %>',
         ' <li class="file-add-comment"><a href="#"><%- addCommentText %></a></li>',
         '<%   } %>',
+        ' <li class="delete">',
+        '  <a href="#" alt="<%- deleteFileText %>"',
+        '     title="<%- deleteFileText %>">',
+        '   <span class="ui-icon ui-icon-trash"></span>',
+        '  </a>',
+        ' </li>',
         '<% } %>'
     ].join('')),
 
     thumbnailContainerTemplate: _.template([
         '<% if (!loaded) { %>',
         ' <img class="file-thumbnail spinner" width="16" height="16" ',
-              'src="<%= spinnerURL %>" />',
+              'src="<%- spinnerURL %>" />',
         '<% } else { %>',
         '<%   if (reviewURL) { %>',
-        ' <a href="<%= reviewURL %>" class="file-thumbnail-overlay"> </a>',
+        ' <a href="<%- reviewURL %>" class="file-thumbnail-overlay"',
+        '    alt="<%- reviewAltText %>" title="<%- reviewAltText %>"> </a>',
         '<%   } %>',
         '<%=  thumbnailHTML %>',
         '<% } %>'
     ].join('')),
 
-    initialize: function() {
+    initialize: function(options) {
+        this.options = options;
+
         this._draftComment = null;
         this._comments = [];
         this._commentsProcessed = false;
@@ -113,19 +121,25 @@ RB.FileAttachmentThumbnail = Backbone.View.extend({
         this._$caption = this._$captionContainer.find('a.edit');
         this._$addCommentButton = this.$('.file-add-comment a');
 
-        this.model.on('destroy', function() {
+        this.listenTo(this.model, 'destroy', function() {
             this.$el.fadeOut(function() {
                 self.remove();
             });
-        }, this);
+        });
 
-        this.model.on('change:caption', this._onCaptionChanged, this);
+        this.listenTo(this.model, 'change:caption', this._onCaptionChanged);
         this._onCaptionChanged();
 
         if (this.options.renderThumbnail) {
             this._$actions = this.$('.actions');
             this._$fileHeader = this.$('.file-header');
+            this._$captionContainer = this.$('.file-caption-container');
             this._$thumbnailContainer = this.$('.file-thumbnail-container');
+
+            this._$fileHeader.find('.download')
+                .bindProperty('href', this.model, 'downloadURL', {
+                    elementToModel: false
+                });
 
             this._$fileHeader.find('.icon')
                 .bindProperty('src', this.model, 'iconURL', {
@@ -137,43 +151,58 @@ RB.FileAttachmentThumbnail = Backbone.View.extend({
                     elementToModel: false
                 });
 
-            this.model.on('change:loaded', this._onLoadedChanged, this);
+            this._$caption.bindProperty('href', this.model, 'downloadURL', {
+                elementToModel: false
+            });
+
+            this.listenTo(this.model, 'change:loaded', this._onLoadedChanged);
             this._onLoadedChanged();
 
-            this.model.on('change:thumbnailHTML', this._renderThumbnail, this);
+            this.listenTo(this.model, 'change:thumbnailHTML',
+                          this._renderThumbnail);
             this._renderThumbnail();
         }
 
-        this._$caption
-            .inlineEditor({
-                editIconClass: 'rb-icon rb-icon-edit',
-                showButtons: false
-            })
-            .on({
-                beginEdit: function() {
-                     if ($(this).hasClass('empty-caption')) {
-                         $(this).inlineEditor('field').val('');
-                     }
+        if (this.options.canEdit !== false) {
+            this._$caption
+                .inlineEditor({
+                    editIconClass: 'rb-icon rb-icon-edit',
+                    showButtons: true
+                })
+                .on({
+                    beginEditPreShow: function() {
+                        self.$el.addClass('editing');
+                    },
+                    beginEdit: function() {
+                        var $this = $(this);
 
-                    self.trigger('beginEdit');
-                },
-                cancel: function() {
-                    self.trigger('endEdit');
-                },
-                complete: function(e, value) {
-                    /*
-                     * We want to set the caption after ready() finishes,
-                     * it case it loads state and overwrites.
-                     */
-                    self.model.ready({
-                        ready: function() {
-                            self.model.set('caption', value);
-                            self.trigger('endEdit');
-                            self.model.save();
+                        if ($this.hasClass('empty-caption')) {
+                            $this.inlineEditor('field').val('');
                         }
-                    });
-                }
-            });
+
+                        self.trigger('beginEdit');
+                    },
+                    cancel: function() {
+                        self.$el.removeClass('editing');
+                        self.trigger('endEdit');
+                    },
+                    complete: function(e, value) {
+                        self.$el.removeClass('editing');
+
+                        /*
+                         * We want to set the caption after ready() finishes,
+                         * it case it loads state and overwrites.
+                         */
+                        self.model.ready({
+                            ready: function() {
+                                self.model.set('caption', value);
+                                self.trigger('endEdit');
+                                self.model.save();
+                            }
+                        });
+                    }
+                });
+        }
 
         return this;
     },
@@ -210,13 +239,6 @@ RB.FileAttachmentThumbnail = Backbone.View.extend({
                 }
             }
         });
-    },
-
-    /*
-     * Shows an inline review UI for the file attachment.
-     */
-    showInlineReviewUI: function() {
-        /* TODO: Display a lightbox and show the page. */
     },
 
     /*
@@ -284,7 +306,6 @@ RB.FileAttachmentThumbnail = Backbone.View.extend({
     _renderContents: function() {
         this.$el
             .html(this.template(_.defaults({
-                deleteFileText: gettext('Delete File'),
                 noCaptionText: gettext('No caption')
             }, this.model.attributes)))
             .addClass(this.className);
@@ -296,6 +317,7 @@ RB.FileAttachmentThumbnail = Backbone.View.extend({
     _renderThumbnail: function() {
         this._$thumbnailContainer.html(
             this.thumbnailContainerTemplate(_.extend({
+                reviewAltText: gettext('Click to review'),
                 spinnerURL: STATIC_URLS['rb/images/spinner.gif']
             }, this.model.attributes)));
     },
@@ -320,8 +342,9 @@ RB.FileAttachmentThumbnail = Backbone.View.extend({
         }
 
         this._$actions.html(this.actionsTemplate(_.defaults({
+            deleteFileText: gettext('Delete this file'),
             reviewText: gettext('Review'),
-            addCommentText: gettext('Add Comment')
+            addCommentText: gettext('New Comment')
         }, this.model.attributes)));
     },
 
@@ -346,7 +369,7 @@ RB.FileAttachmentThumbnail = Backbone.View.extend({
     },
 
     /*
-     * Handler for the Add Comment button.
+     * Handler for the New Comment button.
      *
      * Shows the comment dialog.
      */
@@ -355,18 +378,6 @@ RB.FileAttachmentThumbnail = Backbone.View.extend({
         e.stopPropagation();
 
         this.showCommentDlg();
-    },
-
-    /*
-     * Handler for the Review button when using an inline review UI.
-     *
-     * Shows the review UI for the file attachment.
-     */
-    _onInlineReviewClicked: function(e) {
-        e.preventDefault();
-        e.stopPropagation();
-
-        this.showInlineReviewUI();
     },
 
     /*

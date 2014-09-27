@@ -1,3 +1,5 @@
+from __future__ import unicode_literals
+
 from django import forms
 from django.contrib import admin
 from django.contrib.auth.admin import UserAdmin
@@ -7,6 +9,7 @@ from django.utils.translation import ugettext_lazy as _
 
 from reviewboard.accounts.models import (ReviewRequestVisit, Profile,
                                          LocalSiteProfile)
+from reviewboard.reviews.models import Group
 
 
 USERNAME_REGEX = r'^[-@\w.]+$'
@@ -52,13 +55,24 @@ class ReviewRequestVisitAdmin(admin.ModelAdmin):
 
 
 class ProfileAdmin(admin.ModelAdmin):
-    list_display = ('__unicode__', 'first_time_setup_done')
+    list_display = ('__str__', 'first_time_setup_done')
     raw_id_fields = ('user', 'starred_review_requests', 'starred_groups')
 
 
 class LocalSiteProfileAdmin(admin.ModelAdmin):
-    list_display = ('__unicode__',)
+    list_display = ('__str__',)
     raw_id_fields = ('user', 'profile', 'local_site')
+
+
+def fix_review_counts():
+    """Clear out the review counts, so that they'll be regenerated."""
+    LocalSiteProfile.objects.update(
+        direct_incoming_request_count=None,
+        total_incoming_request_count=None,
+        pending_outgoing_request_count=None,
+        total_outgoing_request_count=None,
+        starred_public_request_count=None)
+    Group.objects.update(incoming_request_count=None)
 
 
 # Get rid of the old User admin model, and replace it with our own.

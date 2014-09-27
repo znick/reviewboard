@@ -63,7 +63,13 @@ RB.ChunkHighlighterView = Backbone.View.extend({
             }
         }
 
-        $(window).on('resize.' + this.cid, this._updatePosition);
+        $(window).on('resize.' + this.cid, _.bind(function() {
+            /*
+             * Other operations may impact the size of the page, so do this
+             * after all resize handlers have been called.
+             */
+            _.defer(this._updatePosition);
+        }, this));
 
         return this;
     },
@@ -72,7 +78,7 @@ RB.ChunkHighlighterView = Backbone.View.extend({
      * Removes the highlighter from the page and disconnects all events.
      */
     remove: function() {
-        _.super(this).remove.call(this);
+        _super(this).remove.call(this);
 
         $(window).off(this.cid);
     },
@@ -106,7 +112,6 @@ RB.ChunkHighlighterView = Backbone.View.extend({
     _updatePosition: function(e) {
         var $container,
             offset,
-            left,
             top,
             width,
             height,

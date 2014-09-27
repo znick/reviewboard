@@ -1,3 +1,5 @@
+from __future__ import unicode_literals
+
 import logging
 
 from django.contrib.auth.models import User
@@ -5,11 +7,12 @@ from django.core.exceptions import ObjectDoesNotExist
 from django.db import connections, router, transaction
 from django.db.models import Manager, Q
 from django.db.models.query import QuerySet
-
-from djblets.util.db import ConcurrencyManager
+from django.utils import six
+from djblets.db.managers import ConcurrencyManager
 
 from reviewboard.diffviewer.models import DiffSetHistory
 from reviewboard.scmtools.errors import ChangeNumberInUseError
+from reviewboard.scmtools.models import Repository
 
 
 class DefaultReviewerManager(Manager):
@@ -76,7 +79,7 @@ class ReviewRequestQuerySet(QuerySet):
                         accounts_reviewrequestvisit.timestamp
                     AND reviews_review.user_id != %(user_id)s
             """ % {
-                'user_id': str(user.id)
+                'user_id': six.text_type(user.id)
             }
 
             queryset = self.extra(select=select_dict)
@@ -94,7 +97,8 @@ class ReviewRequestManager(ConcurrencyManager):
     def get_query_set(self):
         return ReviewRequestQuerySet(self.model)
 
-    def create(self, user, repository, commit_id=None, local_site=None):
+    def create(self, user, repository, commit_id=None, local_site=None,
+               create_from_commit_id=False):
         """
         Creates a new review request, optionally filling in fields based off
         a change number.
@@ -109,6 +113,16 @@ class ReviewRequestManager(ConcurrencyManager):
                 pass
 
             try:
+                from reviewboard.reviews.models import ReviewRequestDraft
+
+                draft = ReviewRequestDraft.objects.get(
+                    commit_id=commit_id,
+                    review_request__repository=repository)
+                raise ChangeNumberInUseError(draft.review_request)
+            except ObjectDoesNotExist:
+                pass
+
+            try:
                 review_request = self.get(changenum=int(commit_id),
                                           repository=repository)
                 raise ChangeNumberInUseError(review_request)
@@ -118,7 +132,7 @@ class ReviewRequestManager(ConcurrencyManager):
         diffset_history = DiffSetHistory()
         diffset_history.save()
 
-        review_request = super(ReviewRequestManager, self).create(
+        review_request = self.model(
             submitter=user,
             status='P',
             public=False,
@@ -127,8 +141,18 @@ class ReviewRequestManager(ConcurrencyManager):
             local_site=local_site)
 
         if commit_id:
-            review_request.update_from_commit_id(commit_id)
+            if create_from_commit_id:
+                try:
+                    review_request.update_from_commit_id(commit_id)
+                except Exception as e:
+                    review_request.commit_id = commit_id
+                    logging.error('Unable to update new review request from '
+                                  'commit ID %s: %s',
+                                  commit_id, e, exc_info=1)
+            else:
+                review_request.commit_id = commit_id
 
+        review_request.validate_unique()
         review_request.save()
 
         if local_site:
@@ -235,8 +259,8 @@ class ReviewRequestManager(ConcurrencyManager):
         else:
             return Q(submitter__username=user_or_username)
 
-    def public(self, *args, **kwargs):
-        return self._query(*args, **kwargs)
+    def public(self, filter_private=True, *args, **kwargs):
+        return self._query(filter_private=filter_private, *args, **kwargs)
 
     def to_group(self, group_name, local_site, *args, **kwargs):
         return self._query(
@@ -265,13 +289,22 @@ class ReviewRequestManager(ConcurrencyManager):
             *args, **kwargs)
 
     def _query(self, user=None, status='P', with_counts=False,
-               extra_query=None, local_site=None):
-        query = Q(public=True)
+               extra_query=None, local_site=None, filter_private=False,
+               show_inactive=False, show_all_unpublished=False):
+        from reviewboard.reviews.models import Group
 
-        if user and user.is_authenticated():
-            query = query | Q(submitter=user)
+        is_authenticated = (user is not None and user.is_authenticated())
 
-        query = query & Q(submitter__is_active=True)
+        if show_all_unpublished:
+            query = Q()
+        else:
+            query = Q(public=True)
+
+            if is_authenticated:
+                query = query | Q(submitter=user)
+
+        if not show_inactive:
+            query = query & Q(submitter__is_active=True)
 
         if status:
             query = query & Q(status=status)
@@ -280,6 +313,29 @@ class ReviewRequestManager(ConcurrencyManager):
 
         if extra_query:
             query = query & extra_query
+
+        if filter_private and (not user or not user.is_superuser):
+            repo_query = (Q(repository=None) |
+                          Q(repository__public=True))
+            group_query = (Q(target_groups=None) |
+                           Q(target_groups__invite_only=False))
+
+            if is_authenticated:
+                accessible_repo_ids = Repository.objects.filter(
+                    Q(users=user) |
+                    Q(review_groups__users=user)).values_list('pk', flat=True)
+                accessible_group_ids = Group.objects.filter(
+                    users=user).values_list('pk', flat=True)
+
+                repo_query = repo_query | Q(repository__in=accessible_repo_ids)
+                group_query = (group_query |
+                               Q(target_groups__in=accessible_group_ids))
+
+                query = query & (Q(submitter=user) |
+                                 (repo_query &
+                                  (Q(target_people=user) | group_query)))
+            else:
+                query = query & repo_query & group_query
 
         query = self.filter(query).distinct()
 
@@ -377,3 +433,61 @@ class ReviewManager(ConcurrencyManager):
             review.delete()
 
         return master_review
+
+    def from_user(self, user_or_username, *args, **kwargs):
+        """Returns the query for reviews created by a user."""
+        if isinstance(user_or_username, User):
+            extra_query = Q(user=user_or_username)
+        else:
+            extra_query = Q(user__username=user_or_username)
+
+        return self._query(extra_query=extra_query, *args, **kwargs)
+
+    def _query(self, user=None, public=True, status='P', extra_query=None,
+               local_site=None, filter_private=False, base_reply_to=None):
+        from reviewboard.reviews.models import Group
+
+        is_authenticated = (user is not None and user.is_authenticated())
+
+        query = Q(public=public) & Q(base_reply_to=base_reply_to)
+
+        if is_authenticated:
+            query = query | Q(user=user)
+
+        if status:
+            query = query & Q(review_request__status=status)
+
+        query = query & Q(review_request__local_site=local_site)
+
+        if extra_query:
+            query = query & extra_query
+
+        if filter_private and (not user or not user.is_superuser):
+            repo_query = (Q(review_request__repository=None) |
+                          Q(review_request__repository__public=True))
+            group_query = (Q(review_request__target_groups=None) |
+                           Q(review_request__target_groups__invite_only=False))
+
+            # TODO: should be consolidated with queries in ReviewRequestManager
+            if is_authenticated:
+                accessible_repo_ids = Repository.objects.filter(
+                    Q(users=user) |
+                    Q(review_groups__users=user)).values_list('pk', flat=True)
+                accessible_group_ids = Group.objects.filter(
+                    users=user).values_list('pk', flat=True)
+
+                repo_query |= \
+                    Q(review_request__repository__in=accessible_repo_ids)
+                group_query |= \
+                    Q(review_request__target_groups__in=accessible_group_ids)
+
+                query = query & (Q(user=user) |
+                                 (repo_query &
+                                  (Q(review_request__target_people=user) |
+                                   group_query)))
+            else:
+                query = query & repo_query & group_query
+
+        query = self.filter(query).distinct()
+
+        return query

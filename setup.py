@@ -22,23 +22,24 @@ from distutils.command.install_data import install_data
 from distutils.command.install import INSTALL_SCHEMES
 from distutils.core import Command
 
-from reviewboard import get_package_version, is_release, VERSION
+from reviewboard import get_package_version, is_release, VERSION, django_version
 
 
 # Make sure this is a version of Python we are compatible with. This should
 # prevent people on older versions from unintentionally trying to install
 # the source tarball, and failing.
 if sys.hexversion < 0x02050000:
-    sys.stderr.write('Review Board %s is incompatible with your version of '
-                     'Python.\n' % get_package_version())
-    sys.stderr.write('Please install Review Board 1.6.x, or '
-                     'upgrade\n')
-    sys.stderr.write('Python to a newer 2.x version (preferably 2.7).\n')
+    sys.stderr.write(
+        'Review Board %s is incompatible with your version of Python.\n'
+        'Please install Review Board 1.6.x or upgrade Python to at least '
+        '2.6.x (preferably 2.7).\n' % get_package_version())
     sys.exit(1)
-elif sys.hexversion < 0x02060000:
-    markdown_requirement = 'markdown==2.2.1'
-else:
-    markdown_requirement = 'markdown>=2.2.1'
+elif sys.hexversion < 0x02060500:
+    sys.stderr.write(
+        'Review Board %s is incompatible with your version of Python.\n'
+        'Please install Review Board 1.7.x or upgrade Python to at least '
+        '2.6.5 (preferably 2.7).\n' % get_package_version())
+    sys.exit(1)
 
 
 # Make sure we're actually in the directory containing setup.py.
@@ -92,7 +93,8 @@ class BuildMedia(Command):
         pass
 
     def run(self):
-        retcode = subprocess.call(['./contrib/internal/build-media.py'])
+        retcode = subprocess.call([
+            sys.executable, 'contrib/internal/build-media.py'])
 
         if retcode != 0:
             raise RuntimeError('Failed to build media files')
@@ -109,7 +111,8 @@ class BuildI18n(Command):
         pass
 
     def run(self):
-        retcode = subprocess.call(['./contrib/internal/build-i18n.py'])
+        retcode = subprocess.call([
+            sys.executable, 'contrib/internal/build-i18n.py'])
 
         if retcode != 0:
             raise RuntimeError('Failed to build i18n files')
@@ -141,13 +144,13 @@ setup(name=PACKAGE_NAME,
       version=get_package_version(),
       license="MIT",
       description="Review Board, a web-based code review tool",
-      url="http://www.reviewboard.org/",
+      url="https://www.reviewboard.org/",
       download_url=download_url,
       author="The Review Board Project",
       author_email="reviewboard@googlegroups.com",
       maintainer="Christian Hammond",
-      maintainer_email="chipx86@chipx86.com",
-      packages=find_packages(exclude=['webtests']),
+      maintainer_email="christian@beanbaginc.com",
+      packages=find_packages(),
       entry_points = {
           'console_scripts': [
               'rb-site = reviewboard.cmdline.rbsite:main',
@@ -161,11 +164,14 @@ setup(name=PACKAGE_NAME,
               'fedorahosted = '
                   'reviewboard.hostingsvcs.fedorahosted:FedoraHosted',
               'github = reviewboard.hostingsvcs.github:GitHub',
+              'gitlab = reviewboard.hostingsvcs.gitlab:GitLab',
               'gitorious = reviewboard.hostingsvcs.gitorious:Gitorious',
               'googlecode = reviewboard.hostingsvcs.googlecode:GoogleCode',
+              'jira = reviewboard.hostingsvcs.jira:JIRA',
               'redmine = reviewboard.hostingsvcs.redmine:Redmine',
               'sourceforge = reviewboard.hostingsvcs.sourceforge:SourceForge',
               'trac = reviewboard.hostingsvcs.trac:Trac',
+              'unfuddle = reviewboard.hostingsvcs.unfuddle:Unfuddle',
               'versionone = reviewboard.hostingsvcs.versionone:VersionOne',
           ],
           'reviewboard.scmtools': [
@@ -187,22 +193,26 @@ setup(name=PACKAGE_NAME,
       },
       cmdclass=cmdclasses,
       install_requires=[
-          'Django>=1.4.6,<1.5',
-          'django_evolution>=0.6.9',
-          'Djblets>=0.7.17,<0.7.18',
-          'django-pipeline>=1.2.24,<1.3',
+          django_version,
+          'django_evolution>=0.7.4,<=0.7.999',
+          'django-haystack>=2.1',
+          'django-multiselectfield',
+          'Djblets>=0.8.11,<=0.8.999',
           'docutils',
-          markdown_requirement,
+          'markdown==2.4.1',
           'mimeparse>=0.1.3',
-          'paramiko>=1.9.0',
-          'Pygments>=1.5',
+          'paramiko>=1.12',
+          'Pygments>=1.6',
           'python-dateutil==1.5',
           'python-memcached',
-          'pytz>=2012h',
+          'pytz',
           'recaptcha-client',
+          'Whoosh>=2.6',
       ],
       dependency_links = [
-          "http://downloads.reviewboard.org/mirror/",
+          'http://downloads.reviewboard.org/mirror/',
+          'http://downloads.reviewboard.org/releases/Djblets/0.8/',
+          'http://downloads.reviewboard.org/releases/django-evolution/0.7/',
           download_url,
       ],
       include_package_data=True,

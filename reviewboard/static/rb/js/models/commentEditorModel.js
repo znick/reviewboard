@@ -16,12 +16,14 @@ RB.CommentEditor = Backbone.Model.extend({
             canEdit: undefined,
             canSave: false,
             editing: false,
+            extraData: {},
             comment: null,
             dirty: false,
             openIssue: userSession.get('commentsOpenAnIssue'),
             publishedComments: [],
             publishedCommentsType: null,
             reviewRequest: null,
+            richText: true,
             statusText: '',
             text: ''
         };
@@ -65,6 +67,27 @@ RB.CommentEditor = Backbone.Model.extend({
         }, this);
 
         this._updateState();
+    },
+
+    /*
+     * Sets extra data for the comment.
+     *
+     * This data will generally be extension-specific. It will be stored
+     * along with the comment on the server.
+     */
+    setExtraData: function(key, value) {
+        var extraData = this.get('extraData');
+
+        extraData[key] = value;
+    },
+
+    /*
+     * Returns extra data for the comment.
+     *
+     * This data will generally be extension-specific.
+     */
+    getExtraData: function(key) {
+        return this.get('extraData')[key];
     },
 
     /*
@@ -141,6 +164,7 @@ RB.CommentEditor = Backbone.Model.extend({
         this.set({
             comment: null,
             dirty: false,
+            extraData: {},
             text: ''
         });
 
@@ -166,7 +190,9 @@ RB.CommentEditor = Backbone.Model.extend({
 
         comment.set({
             text: this.get('text'),
-            issueOpened: this.get('openIssue')
+            issueOpened: this.get('openIssue'),
+            extraData: _.clone(this.get('extraData')),
+            richText: this.get('richText')
         });
 
         comment.save({
@@ -212,6 +238,7 @@ RB.CommentEditor = Backbone.Model.extend({
              */
             this.set({
                 dirty: false,
+                extraData: comment.get('extraData'),
                 openIssue: comment.get('loaded')
                            ? comment.get('issueOpened')
                            : this.defaults().openIssue,

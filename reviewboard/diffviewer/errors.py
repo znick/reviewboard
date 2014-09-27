@@ -1,3 +1,6 @@
+from __future__ import unicode_literals
+
+
 class UserVisibleError(Exception):
     """A user-visible error shown in the rendered output."""
     pass
@@ -19,6 +22,6 @@ class EmptyDiffError(ValueError):
 
 
 class DiffParserError(Exception):
-    def __init__(self, msg, linenum):
+    def __init__(self, msg, linenum=None):
         Exception.__init__(self, msg)
         self.linenum = linenum

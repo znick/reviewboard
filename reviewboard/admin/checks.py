@@ -27,20 +27,21 @@
 # SOFTWARE OR THE USE OR OTHER DEALINGS IN THE SOFTWARE.
 #
 
+from __future__ import unicode_literals
 
 import getpass
-import imp
 import os
 import sys
 
 from django.conf import settings
 from django.core.exceptions import ImproperlyConfigured
 from django.db import DatabaseError
-from django.utils.translation import gettext as _
+from django.utils.translation import ugettext as _
 from djblets.util.filesystem import is_exe_in_path
 from djblets.siteconfig.models import SiteConfiguration
 
 from reviewboard import get_version_string
+from reviewboard.admin.import_utils import has_module
 
 
 _install_fine = False
@@ -72,7 +73,7 @@ def check_updates_required():
         # Errors appear.
         try:
             siteconfig = SiteConfiguration.objects.get_current()
-        except (DatabaseError, SiteConfiguration.DoesNotExist), e:
+        except (DatabaseError, SiteConfiguration.DoesNotExist) as e:
             updates_required.append((
                 'admin/manual-updates/database-error.html', {
                     'error': e,
@@ -161,17 +162,24 @@ def check_updates_required():
                 }
             ))
 
-        # Check if the htdocs/media/ext directory is writable by us.
-        ext_dir = settings.EXTENSIONS_STATIC_ROOT
+        # Check if the the legacy htdocs and modern static extension
+        # directories exist and are writable by us.
+        ext_roots = [settings.MEDIA_ROOT]
 
-        if not os.path.isdir(ext_dir) or not os.access(ext_dir, os.W_OK):
-            updates_required.append((
-                'admin/manual-updates/ext-dir.html', {
-                    'ext_dir': ext_dir,
-                    'writable': os.access(ext_dir, os.W_OK),
-                    'server_user': username,
-                }
-            ))
+        if not settings.DEBUG:
+            ext_roots.append(settings.STATIC_ROOT)
+
+        for root in ext_roots:
+            ext_dir = os.path.join(root, 'ext')
+
+            if not os.path.isdir(ext_dir) or not os.access(ext_dir, os.W_OK):
+                updates_required.append((
+                    'admin/manual-updates/ext-dir.html', {
+                        'ext_dir': ext_dir,
+                        'writable': os.access(ext_dir, os.W_OK),
+                        'server_user': username,
+                    }
+                ))
 
         if not is_exe_in_path('patch'):
             if sys.platform == 'win32':
@@ -206,50 +214,11 @@ def reset_check_cache():
     _install_fine = False
 
 
-def get_can_enable_search():
-    """Checks whether the search functionality can be enabled."""
-    try:
-        imp.find_module("lucene")
-        return (True, None)
-    except ImportError:
-        return (False, _(
-            'PyLucene (with JCC) is required to enable search. See the '
-            '<a href="%(url)s">documentation</a> for instructions.'
-        ) % {
-            'url': 'http://www.reviewboard.org/docs/manual/dev/admin/'
-                   'installation/linux/#installing-pylucene'
-        })
-
-
-def get_can_enable_syntax_highlighting():
-    """Checks whether syntax highlighting can be enabled."""
-    try:
-        import pygments
-
-        version = pygments.__version__.split(".")
-
-        if int(version[0]) > 0 or int(version[1]) >= 9:
-            return (True, None)
-        else:
-            return (False, _(
-                'Pygments %(cur_version)s is installed, but '
-                '%(required_version)s or higher is required '
-                'to use syntax highlighting.'
-            ) % {'cur_version': pygments.__version__,
-                 'required_version': "0.9"})
-    except ImportError:
-        return (False, _(
-            'Syntax highlighting requires the <a href="%(url)s">Pygments</a> '
-            'library, which is not installed.'
-        ) % {'url': "http://www.pygments.org/"})
-
-
 def get_can_enable_ldap():
     """Checks whether LDAP authentication can be enabled."""
-    try:
-        imp.find_module("ldap")
+    if has_module('ldap'):
         return (True, None)
-    except ImportError:
+    else:
         return (False, _(
             'LDAP authentication requires the python-ldap library, which '
             'is not installed.'
@@ -258,12 +227,9 @@ def get_can_enable_ldap():
 
 def get_can_enable_dns():
     """Checks whether we can query DNS to find the domain controller to use."""
-    try:
-        # XXX for reasons I don't understand imp.find_module doesn't work
-        #imp.find_module("DNS")
-        import DNS
+    if has_module('DNS'):
         return (True, None)
-    except ImportError:
+    else:
         return (False, _(
             'PyDNS, which is required to find the domain controller, '
             'is not installed.'
@@ -271,24 +237,37 @@ def get_can_enable_dns():
 
 
 def get_can_use_amazon_s3():
-    """Checks whether django-storages (with the Amazon S3 backend) is installed."""
+    """Checks whether django-storages (Amazon S3 backend) is installed."""
     try:
-        from storages.backends.s3boto import S3BotoStorage
-        return (True, None)
-    except ImproperlyConfigured, e:
+        if has_module('storages.backends.s3boto', members=['S3BotoStorage']):
+            return (True, None)
+        else:
+            return (False, _(
+                'Amazon S3 depends on django-storages, which is not installed'
+            ))
+    except ImproperlyConfigured as e:
         return (False, _('Amazon S3 backend failed to load: %s') % e)
-    except ImportError:
-        return (False, _(
-            'Amazon S3 depends on django-storages, which is not installed'
-        ))
+
+
+def get_can_use_openstack_swift():
+    """Checks whether django-storage-swift is installed."""
+    try:
+        if has_module('swift.storage', members=['SwiftStorage']):
+            return (True, None)
+        else:
+            return (False, _(
+                'OpenStack Swift depends on django-storage-swift, '
+                'which is not installed'
+            ))
+    except ImproperlyConfigured as e:
+        return (False, _('OpenStack Swift backend failed to load: %s') % e)
 
 
 def get_can_use_couchdb():
-    """Checks whether django-storages (with the CouchDB backend) is installed."""
-    try:
-        from storages.backends.couchdb import CouchDBStorage
+    """Checks whether django-storages (CouchDB backend) is installed."""
+    if has_module('storages.backends.couchdb', members=['CouchDBStorage']):
         return (True, None)
-    except ImportError:
+    else:
         return (False, _(
             'CouchDB depends on django-storages, which is not installed'
         ))

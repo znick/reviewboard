@@ -1,9 +1,5 @@
 {% extends "base.html" %}
-{% load admin_static %}
-{% load compressed %}
-{% load i18n %}
-{% load rbadmintags %}
-{% load staticfiles %}
+{% load compressed i18n rbadmintags staticfiles %}
 
 {% block title %}{{title}} | {% trans "Administration" %}{% endblock %}
 
@@ -35,8 +31,9 @@
 {%   if messages %}
  <ul class="messagelist">
 {%    for message in messages %}
-  <li{% if message.tags %} class="{{message.tags}}"{% endif %}{{message}}</li>
+  <li{% if message.tags %} class="{{message.tags}}">{% endif %}{{message}}</li>
 {%    endfor %}
+ </ul>
 {%   endif %}
 {%  endblock %}
 
@@ -55,11 +52,16 @@
 {% block navbar %}
 {%  if user.is_authenticated %}
 <ul id="navbar">
- <li><a href="{% url reviewboard.admin.views.dashboard %}" class="nav-first">{% trans "Admin Dashboard" %}</a></li>
- <li><a href="{% url reviewboard.admin.views.dashboard %}db/">{% trans "Database" %}</a></li>
- <li><a href="{% url djblets.extensions.views.extension_list %}">{% trans "Extensions" %}</a></li>
+ <li><a href="{% url 'reviewboard.admin.views.dashboard' %}" class="nav-first">{% trans "Admin Dashboard" %}</a></li>
+ <li><a href="{% url 'reviewboard.admin.views.dashboard' %}db/">{% trans "Database" %}</a></li>
+ <li><a href="{% url 'djblets.extensions.views.extension_list' %}">{% trans "Extensions" %}</a></li>
 </ul>
 {%   block subnavbar %}{% endblock %}
+{%  endif %}
+{% endblock %}
+
+{% block navbar_post %}
+{%  if user.is_authenticated %}
 <div id="admin-actions" class="clear">
  {% admin_actions %}
 </div>

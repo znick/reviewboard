@@ -1,10 +1,10 @@
-describe('resources/models/Screenshot', function() {
+suite('rb/resources/models/Screenshot', function() {
     var parentObject,
         model;
 
     beforeEach(function(){
         parentObject = new RB.BaseResource({
-            public: true
+            'public': true
         });
 
         model = new RB.Screenshot({

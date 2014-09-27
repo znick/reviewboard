@@ -6,13 +6,19 @@
 RB.ReviewReply = RB.BaseResource.extend({
     defaults: _.defaults({
         review: null,
-        public: false,
+        'public': false,
+        richText: false,
         bodyTop: null,
-        bodyBottom: null
+        bodyBottom: null,
+        timestamp: null
     }, RB.BaseResource.prototype.defaults),
 
     rspNamespace: 'reply',
     listKey: 'replies',
+
+    extraQueryArgs: {
+        'force-text-type': 'markdown'
+    },
 
     COMMENT_LINK_NAMES: [
         'diff_comments',
@@ -24,7 +30,8 @@ RB.ReviewReply = RB.BaseResource.extend({
         return {
             'public': this.get('public'),
             'body_top': this.get('bodyTop'),
-            'body_bottom': this.get('bodyBottom')
+            'body_bottom': this.get('bodyBottom'),
+            'text_type': this.get('richText') ? 'markdown' : 'plain'
         };
     },
 
@@ -32,7 +39,9 @@ RB.ReviewReply = RB.BaseResource.extend({
         return {
             bodyTop: rsp.body_top,
             bodyBottom: rsp.body_bottom,
-            public: rsp.public
+            'public': rsp['public'],
+            richText: rsp.text_type === 'markdown',
+            timestamp: rsp.timestamp
         };
     },
 

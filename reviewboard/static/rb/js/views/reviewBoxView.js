@@ -6,11 +6,13 @@
  */
 RB.ReviewBoxView = RB.CollapsableBoxView.extend({
     initialize: function() {
+        this._$shipIt = null;
         this._reviewReply = null;
         this._replyEditors = [];
         this._replyEditorViews = [];
         this._draftBannerShown = false;
         this._$banners = null;
+        this._openIssueCount = 0;
 
         this._setupNewReply(this.options.reviewReply);
     },
@@ -27,18 +29,28 @@ RB.ReviewBoxView = RB.CollapsableBoxView.extend({
         var reviewRequest = this.model.get('parentObject'),
             pageEditState = this.options.pageEditState,
             bugTrackerURL = reviewRequest.get('bugTrackerURL'),
-            review = this.model;
+            review = this.model,
+            loadReviewID;
 
         RB.CollapsableBoxView.prototype.render.call(this);
 
-        this._$banners = this.$('.banners');
+        // Expand the box if the review is current being linked to
+        if (document.URL.indexOf("#review") > -1) {
+            loadReviewID = document.URL.split('#review')[1];
+            if (parseInt(loadReviewID, 10) === this.model.id) {
+                this._$box.removeClass('collapsed');
+                this._$expandCollapseButton
+                    .removeClass('rb-icon-expand-review')
+                    .addClass('rb-icon-collapse-review');
+            }
+        }
 
-        this._reviewReply.on('destroyed published', function() {
-            this._setupNewReply();
-        }, this);
+        this._$banners = this.$('.banners');
+        this._$shipIt = this.$('.shipit');
 
         _.each(this.$('.review-comments .issue-indicator'), function(el) {
             var $issueState = $('.issue-state', el),
+                issueStatus,
                 issueBar;
 
             /*
@@ -46,6 +58,12 @@ RB.ReviewBoxView = RB.CollapsableBoxView.extend({
              * the issue bar.
              */
             if ($issueState.length > 0) {
+                issueStatus = $issueState.data('issue-status');
+
+                if (issueStatus === RB.BaseComment.STATE_OPEN) {
+                    this._openIssueCount++;
+                }
+
                 issueBar = new RB.CommentIssueBarView({
                     el: el,
                     reviewID: this.model.id,
@@ -56,6 +74,9 @@ RB.ReviewBoxView = RB.CollapsableBoxView.extend({
                 });
 
                 issueBar.render();
+
+                this.listenTo(issueBar, 'statusChanged',
+                              this._onIssueStatusChanged);
             }
         }, this);
 
@@ -158,10 +179,12 @@ RB.ReviewBoxView = RB.CollapsableBoxView.extend({
             reviewReply = this.model.createReply();
         }
 
-        reviewReply.on('destroyed published', this._setupNewReply, this);
+        this.listenTo(reviewReply, 'destroyed published', function() {
+            this._setupNewReply();
+        });
 
         if (hadReviewReply) {
-            this._reviewReply.off(null, null, this);
+            this.stopListening(this._reviewReply);
 
             /*
              * We had one displayed before. Now it's time to clean up and
@@ -175,5 +198,41 @@ RB.ReviewBoxView = RB.CollapsableBoxView.extend({
         }
 
         this._reviewReply = reviewReply;
+    },
+
+    /*
+     * Handler for when the issue status of a comment changes.
+     *
+     * This will update the number of open issues, and, if there's a
+     * Ship It!, will update the label.
+     */
+    _onIssueStatusChanged: function(issueStatus) {
+        if (issueStatus === RB.BaseComment.STATE_OPEN) {
+            this._openIssueCount++;
+        } else {
+            this._openIssueCount--;
+        }
+
+        if (this._$shipIt.length > 0) {
+            this._updateShipItLabel();
+        }
+    },
+
+    /*
+     * Updates the Ship It label based on the open issue counts.
+     *
+     * If there are open issues, the label will say "Fix it, then Ship it!"
+     * If all open issues are closed, it will say "Ship it!"
+     */
+    _updateShipItLabel: function() {
+        if (this._openIssueCount === 0) {
+            this._$shipIt
+                .removeClass('with-issues')
+                .text(gettext('Ship it!'));
+        } else {
+            this._$shipIt
+                .addClass('with-issues')
+                .text(gettext('Fix it, then Ship it!'));
+        }
     }
 });

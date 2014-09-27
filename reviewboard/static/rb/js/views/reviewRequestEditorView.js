@@ -1,3 +1,260 @@
+(function() {
+
+
+var BannerView,
+    ClosedBannerView,
+    DraftBannerView;
+
+
+/*
+ * Base class for review request banners.
+ *
+ * This will render a banner based on the data provided by subclasses,
+ * and handle actions and editing of text fields.
+ */
+BannerView = Backbone.View.extend({
+    className: 'banner',
+    title: '',
+    subtitle: '',
+    actions: [],
+    showChangesField: true,
+    describeText: '',
+    fieldOptions: {},
+
+    template: _.template([
+        '<h1><%- title %></h1>',
+        '<%- subtitle %>',
+        '<% _.each(actions, function(action) { %>',
+        ' <input type="button" id="<%= action.id %>" ',
+        '        value="<%- action.label %>" />',
+        '<% }); %>',
+        '<% if (showChangesField) { %>',
+        ' <p><label for="field_changedescription">',
+        '<%- describeText %></label></p>',
+        ' <pre id="field_changedescription"',
+        '      class="editable field-text-area field"',
+        '      data-rich-text="true" data-field-id="changedescription">',
+        '<%- closeDescription %></pre>',
+        '<% } %>'
+    ].join('')),
+
+    /*
+     * Initializes the banner.
+     */
+    initialize: function(options) {
+        this.reviewRequestEditorView = options.reviewRequestEditorView;
+        this.reviewRequest =
+            this.reviewRequestEditorView.model.get('reviewRequest');
+
+        this.reviewRequestEditorView.registerField(_.defaults({
+            fieldID: 'changedescription',
+            fieldName: 'changeDescription',
+            elementOptional: true,
+            editMarkdown: true,
+            useExtraData: false,
+            formatter: function(view, data, $el) {
+                view.formatText($el, data);
+            }
+        }, this.fieldOptions));
+
+        this.$buttons = null;
+    },
+
+    /*
+     * Renders the banner.
+     *
+     * If there's an existing banner on the page, from the generated
+     * template, then this will make use of that template. Otherwise,
+     * it will construct a new one.
+     */
+    render: function() {
+        var reviewRequestEditor = this.reviewRequestEditorView.model;
+
+        if (this.$el.children().length === 0) {
+            this.$el.html(this.template({
+                title: this.title,
+                subtitle: this.subtitle,
+                actions: this.actions,
+                showChangesField: this.showChangesField,
+                describeText: this.describeText,
+                closeDescription: this.reviewRequest.get('closeDescription')
+            }));
+        }
+
+        this.$buttons = this.$('input');
+
+        reviewRequestEditor.on('saving destroying', function() {
+            this.$buttons.prop('disabled', true);
+        }, this);
+
+        reviewRequestEditor.on('saved saveFailed destroyed', function() {
+            this.$buttons.prop('disabled', false);
+        }, this);
+
+        this.reviewRequestEditorView.setupFieldEditor('changedescription');
+
+        return this;
+    }
+});
+
+
+/*
+ * Base class for a banner representing a closed review request.
+ *
+ * This provides a button for reopening the review request. It's up
+ * to subclasses to provide the other details.
+ */
+ClosedBannerView = BannerView.extend({
+    actions: [
+        {
+            id: 'btn-review-request-reopen',
+            label: gettext('Reopen for Review')
+        }
+    ],
+    fieldOptions: {
+        statusField: true
+    },
+
+    events: {
+        'click #btn-review-request-reopen': '_onReopenClicked'
+    },
+
+    /*
+     * Handler for Reopen Review Request.
+     */
+    _onReopenClicked: function() {
+        this.reviewRequest.reopen();
+
+        return false;
+    }
+});
+
+
+/*
+ * A banner representing a discarded review request.
+ */
+DiscardedBannerView = ClosedBannerView.extend({
+    id: 'discard-banner',
+    title: gettext('This change has been discarded.'),
+    describeText: gettext("Describe the reason it's discarded (optional):"),
+    fieldOptions: _.defaults({
+        closeType: RB.ReviewRequest.CLOSE_DISCARDED
+    }, ClosedBannerView.prototype.fieldOptions)
+});
+
+
+/*
+ * A banner representing a submitted review request.
+ */
+SubmittedBannerView = ClosedBannerView.extend({
+    id: 'submitted-banner',
+    title: gettext('This change has been marked as submitted.'),
+    describeText: gettext('Describe the submission (optional):'),
+    fieldOptions: _.defaults({
+        closeType: RB.ReviewRequest.CLOSE_SUBMITTED
+    }, ClosedBannerView.prototype.fieldOptions)
+});
+
+
+/*
+ * A banner representing a draft of a review request.
+ *
+ * Depending on the public state of the review request, this will
+ * show different text and a different set of buttons.
+ */
+DraftBannerView = BannerView.extend({
+    id: 'draft-banner',
+    subtitle: 'Be sure to publish when finished.',
+    describeText: 'Describe your changes (optional):',
+
+    events: {
+        'click #btn-draft-publish': '_onPublishDraftClicked',
+        'click #btn-draft-discard': '_onDiscardDraftClicked',
+        'click #btn-review-request-discard': '_onCloseDiscardedClicked'
+    },
+
+    /*
+     * Initializes the banner.
+     */
+    initialize: function() {
+        _super(this).initialize.apply(this, arguments);
+
+        if (this.reviewRequest.get('public')) {
+            this.title = 'This review request is a draft.';
+            this.actions = [
+                {
+                    id: 'btn-draft-publish',
+                    label: gettext('Publish Changes')
+                },
+                {
+                    id: 'btn-draft-discard',
+                    label: gettext('Discard Draft')
+                }
+            ];
+        } else {
+            this.showChangesField = false;
+            this.actions = [
+                {
+                    id: 'btn-draft-publish',
+                    label: gettext('Publish')
+                },
+                {
+                    id: 'btn-review-request-discard',
+                    label: gettext('Discard Review Request')
+                }
+            ];
+        }
+    },
+
+    /*
+     * Handler for when the Publish Draft button is clicked.
+     *
+     * Begins publishing the review request. If there are any field editors
+     * still open, they'll be saved first.
+     */
+    _onPublishDraftClicked: function() {
+        this.reviewRequestEditorView.publishDraft();
+
+        return false;
+    },
+
+    /*
+     * Handler for when the Discard Draft button is clicked.
+     *
+     * Discards the draft of the review request.
+     */
+    _onDiscardDraftClicked: function() {
+        this.reviewRequest.draft.destroy({
+            error: function(xhr) {
+                alert(xhr.errorText);
+            }
+        });
+
+        return false;
+    },
+
+    /*
+     * Handler for when Discard Review request button is clicked.
+     */
+    _onDiscardedReviewRequestClicked: function() {
+        this.reviewRequestEditorView.closeDiscarded();
+
+        return false;
+    },
+
+    /*
+     * Handler for when Discard button is clicked.
+     */
+    _onCloseDiscardedClicked: function() {
+        this.reviewRequest.close({
+            type: RB.ReviewRequest.CLOSE_DISCARDED
+        });
+
+        return false;
+    }
+});
+
+
 /*
  * Manages the user-visible state of an editable review request.
  *
@@ -5,70 +262,41 @@
  * around editing a review request.
  */
 RB.ReviewRequestEditorView = Backbone.View.extend({
-    events: {
-        'click #btn-draft-publish': '_onPublishDraftClicked',
-        'click #btn-draft-discard': '_onDiscardDraftClicked',
-        'click #btn-review-request-discard': '_onCloseDiscardedClicked',
-        'click #btn-review-request-reopen': '_onReopenClicked'
-    },
-
     defaultFields: [
         {
-            fieldName: 'branch'
+            fieldID: 'branch'
         },
         {
+            fieldID: 'bugs_closed',
             fieldName: 'bugsClosed',
-            jsonFieldName: 'bugs_closed',
-            selector: '#bugs_closed',
+            selector: '#field_bugs_closed',
             useEditIconOnly: true,
             formatter: function(view, data, $el) {
                 var reviewRequest = view.model.get('reviewRequest'),
-                    bugTrackerURL = reviewRequest.get('bugTrackerURL');
+                    bugTrackerURL = reviewRequest.get('bugTrackerURL'),
+                    bugList,
+                    $bugList;
 
                 data = data || [];
 
                 if (bugTrackerURL) {
-                    $el.html(view.urlizeList(data, function(item) {
-                        return bugTrackerURL.replace('%s', item);
-                    }));
+                    bugList = view.urlizeList(data, function(item) {
+                        return bugTrackerURL.replace('--bug_id--', item);
+                    });
+
+                    $bugList = $(bugList)
+                        .addClass('bug')
+                        .bug_infobox();
+
+                    $el.html($bugList);
                 } else {
-                    $el.html(data.join(", "));
+                    $el.text(data.join(", "));
                 }
             }
         },
         {
-            fieldName: 'changeDescription',
-            selector: '#draft-banner #changedescription',
-            jsonFieldName: 'changedescription',
-            elementOptional: true,
-            formatter: function(view, data, $el) {
-                view.formatText($el, data);
-            }
-        },
-        {
-            fieldName: 'changeDescription',
-            selector: '#submitted-banner #changedescription',
-            jsonFieldName: 'changedescription',
-            elementOptional: true,
-            closeType: RB.ReviewRequest.CLOSE_SUBMITTED,
-            formatter: function(view, data, $el) {
-                view.formatText($el, data);
-            }
-        },
-        {
-            fieldName: 'changeDescription',
-            selector: '#discard-banner #changedescription',
-            jsonFieldName: 'changedescription',
-            elementOptional: true,
-            closeType: RB.ReviewRequest.CLOSE_DISCARDED,
-            formatter: function(view, data, $el) {
-                view.formatText($el, data);
-            }
-        },
-        {
+            fieldID: 'depends_on',
             fieldName: 'dependsOn',
-            selector: '#depends_on',
-            jsonFieldName: 'depends_on',
             useEditIconOnly: true,
             formatter: function(view, data, $el) {
                 $el.html(view.urlizeList(
@@ -79,18 +307,18 @@ RB.ReviewRequestEditorView = Backbone.View.extend({
             }
         },
         {
-            fieldName: 'description',
+            fieldID: 'description',
+            editMarkdown: true,
             formatter: function(view, data, $el) {
                 view.formatText($el, data);
             }
         },
         {
-            fieldName: 'summary'
+            fieldID: 'summary'
         },
         {
+            fieldID: 'target_groups',
             fieldName: 'targetGroups',
-            selector: '#target_groups',
-            jsonFieldName: 'target_groups',
             useEditIconOnly: true,
             autocomplete: {
                 fieldName: 'groups',
@@ -109,9 +337,8 @@ RB.ReviewRequestEditorView = Backbone.View.extend({
             }
         },
         {
+            fieldID: 'target_people',
             fieldName: 'targetPeople',
-            selector: '#target_people',
-            jsonFieldName: 'target_people',
             useEditIconOnly: true,
             autocomplete: {
                 fieldName: 'users',
@@ -119,6 +346,28 @@ RB.ReviewRequestEditorView = Backbone.View.extend({
                 descKey: 'fullname',
                 extraParams: {
                     fullname: 1
+                },
+                cmp: function(term, a, b) {
+                    /*
+                     * Sort the results with username matches first (in
+                     * alphabetical order), followed by real name matches (in
+                     * alphabetical order)
+                     */
+                    var aUsername = a.data.username,
+                        bUsername = b.data.username,
+                        aFullname = a.data.fullname,
+                        bFullname = a.data.fullname;
+
+                    if (aUsername.indexOf(term) === 0) {
+                        if (bUsername.indexOf(term) === 0) {
+                            return aUsername.localeCompare(bUsername);
+                        }
+                        return -1;
+                    } else if (bUsername.indexOf(term) === 0) {
+                        return 1;
+                    } else {
+                        return aFullname.localeCompare(bFullname);
+                    }
                 }
             },
             formatter: function(view, data, $el) {
@@ -135,9 +384,9 @@ RB.ReviewRequestEditorView = Backbone.View.extend({
             }
         },
         {
+            fieldID: 'testing_done',
             fieldName: 'testingDone',
-            selector: '#testing_done',
-            jsonFieldName: 'testing_done',
+            editMarkdown: true,
             formatter: function(view, data, $el) {
                 view.formatText($el, data);
             }
@@ -145,14 +394,34 @@ RB.ReviewRequestEditorView = Backbone.View.extend({
     ],
 
     initialize: function() {
-        this._fieldEditors = [];
+        var $issueSummary = $('#issue-summary');
 
-        _.each(this.defaultFields, this.registerField, this);
+        _.bindAll(this, '_checkResizeLayout', '_scheduleResizeLayout',
+                  '_onCloseDiscardedClicked', '_onCloseSubmittedClicked',
+                  '_onDeleteReviewRequestClicked', '_onUpdateDiffClicked');
 
-        this.issueSummaryTableView = new RB.IssueSummaryTableView({
-            el: $('#issue-summary'),
-            model: this.model.get('commentIssueManager')
-        });
+        this._fieldEditors = {};
+        this._hasFields = (this.$('.editable').length > 0);
+
+        if (this._hasFields) {
+            _.each(this.defaultFields, function(fieldInfo) {
+                this.registerField(_.defaults({
+                    useExtraData: false
+                }, fieldInfo));
+            }, this);
+        }
+
+        this.draft = this.model.get('reviewRequest').draft;
+        this.banner = null;
+        this._$main = null;
+        this._$extra = null;
+
+        if ($issueSummary.length > 0) {
+            this.issueSummaryTableView = new RB.IssueSummaryTableView({
+                el: $('#issue-summary'),
+                model: this.model.get('commentIssueManager')
+            });
+        }
     },
 
     /*
@@ -184,17 +453,26 @@ RB.ReviewRequestEditorView = Backbone.View.extend({
      *     * useEditIconOnly
      *       - If true, only clicking the edit icon will begin editing.
      *         Defaults to false.
+     *
+     *     * useExtraData
+     *       - If true, field values will be stored in extraData.
+     *         Defaults to true for non-builtin fields.
      */
     registerField: function(options) {
-        console.assert(_.has(options, 'fieldName'));
+        var fieldID = options.fieldID;
 
-        this._fieldEditors.push(_.extend({
-            selector: '#' + options.fieldName,
+        console.assert(fieldID);
+
+        this._fieldEditors[fieldID] = _.extend({
+            selector: '#field_' + fieldID,
             elementOptional: false,
+            fieldID: fieldID,
+            fieldName: fieldID,
             formatter: null,
-            jsonFieldName: options.fieldName,
-            useEditIconOnly: false
-        }, options));
+            jsonFieldName: fieldID,
+            useEditIconOnly: false,
+            useExtraData: true
+        }, options);
     },
 
     /*
@@ -204,96 +482,136 @@ RB.ReviewRequestEditorView = Backbone.View.extend({
      * thumbnails, turning them into FileAttachment and Screenshot objects.
      */
     render: function() {
-        var draft = this.model.get('reviewRequest').draft;
-
-        this.$draftBanner = $('#draft-banner');
-        this.$draftBannerButtons = this.$draftBanner.find('input');
+        var reviewRequest = this.model.get('reviewRequest'),
+            draft = reviewRequest.draft;
 
         this._$box = this.$('.review-request');
         this._$warning = $('#review-request-warning');
         this._$screenshots = $('#screenshot-thumbnails');
         this._$attachments = $('#file-list');
         this._$attachmentsContainer = $(this._$attachments.parent()[0]);
+        this._$bannersContainer = $('#review_request_banners');
+        this._$main = $('#review_request_main');
+        this._$extra = $('#review_request_extra');
 
-        this.dndUploader = new RB.DnDUploader({
-            reviewRequestEditor: this.model
-        });
+        /*
+         * Find any editors that weren't registered. These may be from
+         * extensions.
+         */
+        if (this._hasFields) {
+            _.each(this.$('.field.editable'), function(field) {
+                var $field = $(field),
+                    fieldID = $field.data('field-id'),
+                    isCommaEditable,
+                    fieldInfo;
 
-        this.issueSummaryTableView.render();
+                if (!this._fieldEditors[fieldID] &&
+                    $field.hasClass('editable')) {
+                    isCommaEditable = $field.hasClass('comma-editable');
+
+                    fieldInfo = {
+                        fieldID: fieldID
+                    };
+
+                    if (isCommaEditable) {
+                        fieldInfo.useEditIconOnly = true;
+                        fieldInfo.formatter = function(view, data, $el) {
+                            data = data || [];
+                            $el.html(data.join(', '));
+                        };
+                    } else if ($field.data('rich-text')) {
+                        fieldInfo.editMarkdown = true;
+                        fieldInfo.formatter = function(view, data, $el) {
+                            view.formatText($el, data);
+                        };
+                    }
+
+                    this.registerField(fieldInfo);
+                }
+            }, this);
+
+            /*
+             * Set up editors for every registered field.
+             */
+            _.each(this._fieldEditors, function(fieldOptions, fieldID) {
+                this.setupFieldEditor(fieldID);
+            }, this);
+
+            /*
+             * Linkify any text in the description, testing done, and change
+             * description fields.
+             *
+             * Do this as soon as possible, so that we don't show spinners for
+             * too long. It must be done after the fields are set up,
+             * though.
+             */
+            _.each(this.$('.field-text-area'), function(el) {
+                var $el = $(el);
+
+                this.formatText($el, $el.text());
+            }, this);
+
+            if (this.model.get('editable')) {
+                this.dndUploader = new RB.DnDUploader({
+                    reviewRequestEditor: this.model
+                });
+            }
+
+            /*
+             * Update the layout constraints any time these properties
+             * change. Also, right away.
+             */
+            $(window).resize(this._scheduleResizeLayout);
+            this.listenTo(this.model, 'change:editCount', this._checkResizeLayout);
+            this._checkResizeLayout();
+
+            if (this.issueSummaryTableView) {
+                this.issueSummaryTableView.render();
+            }
+
+            this.model.fileAttachments.on('add',
+                                          this.buildFileAttachmentThumbnail,
+                                          this);
+
+            /*
+             * Import all the screenshots and file attachments rendered onto
+             * the page.
+             */
+            _.each(this._$screenshots.find('.screenshot-container'),
+                   this._importScreenshotThumbnail,
+                   this);
+            _.each(this._$attachments.find('.file-container'),
+                   this._importFileAttachmentThumbnail,
+                   this);
+            _.each($('.binary'),
+                   this._importFileAttachmentThumbnail,
+                   this);
+        }
 
         this._setupActions();
 
-        this.model.fileAttachments.on('add',
-                                      this._buildFileAttachmentThumbnail,
-                                      this);
-
-        this.model.on('saving', function() {
-            this.$draftBannerButtons.prop('disabled', true);
-        }, this);
-
-        this.model.on('saved', function() {
-            this.$draftBannerButtons.prop('disabled', false);
-            this.$draftBanner.show();
-        }, this);
+        if (this._$bannersContainer.children().filter(':visible').length > 0) {
+            this.showBanner();
+        }
 
         this.model.on('publishError', function(errorText) {
             alert(errorText);
-        });
 
+            this.$('#btn-draft-publish').enable();
+            this.$('#btn-draft-discard').enable();
+        }, this);
+
+        this.model.on('saved', this.showBanner, this);
         this.model.on('published', this._refreshPage, this);
-
-        /*
-         * Import all the screenshots and file attachments rendered onto
-         * the page.
-         */
-        _.each(this._$screenshots.find('.screenshot-container'),
-               this._importScreenshotThumbnail,
-               this);
-        _.each(this._$attachments.find('.file-container'),
-               this._importFileAttachmentThumbnail,
-               this);
-        _.each($('.binary'),
-               this._importFileAttachmentThumbnail,
-               this);
-
-        /*
-         * Set up editors for every registered field.
-         */
-        _.each(this._fieldEditors, function(fieldOptions) {
-            var $el = this.$(fieldOptions.selector);
-
-            if ($el.length === 0) {
-                return;
-            }
-
-            this._buildEditor($el, fieldOptions);
-
-            if (_.has(fieldOptions, 'autocomplete')) {
-                this._buildAutoComplete($el, fieldOptions.autocomplete);
-            }
-
-            draft.on('change:' + fieldOptions.fieldName,
-                     _.bind(this._formatField, this, fieldOptions));
-        }, this);
-
-        /*
-         * Linkify any text in the description, testing done, and change
-         * description fields.
-         */
-        _.each($("#description, #testing_done, #changedescription"), function(el) {
-            var $el = $(el);
-
-            this.formatText($el, $el.text());
-        }, this);
-
-        this.model.on('change:editable', this._onEditableChanged, this);
-        this._onEditableChanged();
+        reviewRequest.on('closed reopened', this._refreshPage, this);
+        draft.on('destroyed', this._refreshPage, this);
 
         /*
          * Warn the user if they try to navigate away with unsaved comments.
          */
         window.onbeforeunload = _.bind(function(evt) {
-            if (this.model.get('editable') &&
+            if ((this.model.get('editable') ||
+                 this.model.get('statusEditable')) &&
                 this.model.get('editCount') > 0) {
                 /*
                  * On IE, the text must be set in evt.returnValue.
@@ -312,6 +630,96 @@ RB.ReviewRequestEditorView = Backbone.View.extend({
         }, this);
 
         return this;
+    },
+
+    /*
+     * Sets up an editor for the given field.
+     *
+     * This will build the editor for a field and update the field contents
+     * any time the matching field changes on a draft.
+     */
+    setupFieldEditor: function(fieldID) {
+        var fieldOptions = this._fieldEditors[fieldID],
+            $el = this.$(fieldOptions.selector);
+
+        if ($el.length === 0) {
+            return;
+        }
+
+        this._buildEditor($el, fieldOptions);
+
+        if (_.has(fieldOptions, 'autocomplete')) {
+            this._buildAutoComplete($el, fieldOptions.autocomplete);
+            $el.inlineEditor('setupEvents');
+        }
+
+        this.listenTo(this.draft, 'change:' + fieldOptions.fieldName,
+                      _.bind(this._formatField, this, fieldOptions));
+    },
+
+    /*
+     * Shows a banner for the given state of the review request.
+     */
+    showBanner: function() {
+        var BannerClass,
+            reviewRequest = this.model.get('reviewRequest'),
+            state = reviewRequest.get('state'),
+            $existingBanner = this._$bannersContainer.children();
+
+        if (this.banner) {
+            return;
+        }
+
+        console.assert($existingBanner.length <= 1);
+
+        if ($existingBanner.length === 0) {
+            $existingBanner = undefined;
+        }
+
+        if (state === RB.ReviewRequest.CLOSE_SUBMITTED) {
+            BannerClass = SubmittedBannerView;
+        } else if (state === RB.ReviewRequest.CLOSE_DISCARDED) {
+            BannerClass = DiscardedBannerView;
+        } else if (state === RB.ReviewRequest.PENDING) {
+            BannerClass = DraftBannerView;
+        }
+
+        console.assert(BannerClass);
+
+        this.banner = new BannerClass({
+            el: $existingBanner,
+            reviewRequestEditorView: this
+        });
+
+        if ($existingBanner) {
+            $existingBanner.show();
+        } else {
+            this.banner.$el.appendTo(this._$bannersContainer);
+        }
+
+        this.banner.render();
+    },
+
+    /*
+     * Handler for when the Publish Draft button is clicked.
+     *
+     * Begins publishing the review request. If there are any field editors
+     * still open, they'll be saved first.
+     */
+    publishDraft: function() {
+        /* Save all the fields if we need to. */
+        var fields = this.$(".editable:inlineEditorDirty");
+
+        this.model.set({
+            publishing: true,
+            pendingSaveCount: fields.length
+        });
+
+        if (fields.length === 0) {
+            this.model.publishDraft();
+        } else {
+            fields.inlineEditor("submit");
+        }
     },
 
     /*
@@ -360,6 +768,8 @@ RB.ReviewRequestEditorView = Backbone.View.extend({
         var reviewRequest = this.model.get('reviewRequest');
 
         RB.formatText($el, text || '', reviewRequest.get('bugTrackerURL'));
+
+        $el.find('img').load(this._checkResizeLayout);
     },
 
     /*
@@ -369,6 +779,7 @@ RB.ReviewRequestEditorView = Backbone.View.extend({
         var $closeDiscarded = this.$('#discard-review-request-link'),
             $closeSubmitted = this.$('#link-review-request-close-submitted'),
             $deletePermanently = this.$('#delete-review-request-link'),
+            $updateDiff = this.$('#upload-diff-link'),
             $menuitem;
 
         /* Provide support for expanding submenus in the action list. */
@@ -399,10 +810,10 @@ RB.ReviewRequestEditorView = Backbone.View.extend({
          * We don't want the click event filtering from these down to the
          * parent menu, so we can't use events above.
          */
-        $closeDiscarded.click(_.bind(this._onCloseDiscardedClicked, this));
-        $closeSubmitted.click(_.bind(this._onCloseSubmittedClicked, this));
-        $deletePermanently.click(_.bind(this._onDeleteReviewRequestClicked,
-                                        this));
+        $closeDiscarded.click(this._onCloseDiscardedClicked);
+        $closeSubmitted.click(this._onCloseSubmittedClicked);
+        $deletePermanently.click(this._onDeleteReviewRequestClicked);
+        $updateDiff.click(this._onUpdateDiffClicked);
     },
 
     /*
@@ -415,17 +826,24 @@ RB.ReviewRequestEditorView = Backbone.View.extend({
      * attachment (through drag-and-drop or Add File), or after importing
      * from the rendered page.
      */
-    _buildFileAttachmentThumbnail: function(fileAttachment, collection,
-                                            options) {
+    buildFileAttachmentThumbnail: function(fileAttachment, collection,
+                                           options) {
         var fileAttachmentComments = this.model.get('fileAttachmentComments'),
-            $thumbnail = options ? options.$el : undefined,
-            view = new RB.FileAttachmentThumbnail({
-                el: $thumbnail,
-                model: fileAttachment,
-                comments: fileAttachmentComments[fileAttachment.id],
-                renderThumbnail: ($thumbnail === undefined),
-                reviewRequest: this.model.get('reviewRequest')
-            });
+            $thumbnail,
+            view;
+
+        options = options || {};
+
+        $thumbnail = options.$el;
+
+        view = new RB.FileAttachmentThumbnail({
+            el: $thumbnail,
+            model: fileAttachment,
+            comments: fileAttachmentComments[fileAttachment.id],
+            renderThumbnail: ($thumbnail === undefined),
+            reviewRequest: this.model.get('reviewRequest'),
+            canEdit: (options.canEdit !== false)
+        });
 
         view.render();
 
@@ -460,7 +878,7 @@ RB.ReviewRequestEditorView = Backbone.View.extend({
             id = $thumbnail.data('file-id'),
             $caption = $thumbnail.find('.file-caption .edit'),
             reviewRequest = this.model.get('reviewRequest'),
-            fileAttachment = reviewRequest.createFileAttachment({
+            fileAttachment = reviewRequest.draft.createFileAttachment({
                 id: id
             });
 
@@ -507,25 +925,49 @@ RB.ReviewRequestEditorView = Backbone.View.extend({
     _buildEditor: function($el, fieldOptions) {
         var model = this.model,
             el = $el[0],
-            id = el.id;
-
-        $el
-            .inlineEditor({
+            id = el.id,
+            editableProp = (fieldOptions.statusField
+                            ? 'statusEditable'
+                            : 'editable'),
+            multiline = $el.hasClass('field-text-area'),
+            options = {
                 cls: id + '-editor',
                 editIconClass: 'rb-icon rb-icon-edit',
-                multiline: el.tagName === 'PRE',
-                showButtons: !$el.hasClass('screenshot-editable'),
+                enabled: this.model.get(editableProp),
+                multiline: multiline,
                 useEditIconOnly: fieldOptions.useEditIconOnly,
-                showRequiredFlag: $el.hasClass('required')
-            })
+                showRequiredFlag: $el.hasClass('required'),
+                deferEventSetup: _.has(fieldOptions, 'autocomplete')
+            };
+
+        if (fieldOptions.editMarkdown) {
+            _.extend(options, RB.MarkdownEditorView.getInlineEditorOptions({
+                minHeight: 0
+            }));
+        }
+
+        $el
+            .inlineEditor(options)
             .on({
                 beginEdit: function() {
                     model.incr('editCount');
                 },
-                cancel: function() {
+                cancel: _.bind(function() {
+                    if (fieldOptions.editMarkdown) {
+                        $el.inlineEditor('buttons')
+                           .find('.markdown-info')
+                           .remove();
+                    }
+                    this._scheduleResizeLayout();
                     model.decr('editCount');
-                },
+                }, this),
                 complete: _.bind(function(e, value) {
+                    if (fieldOptions.editMarkdown) {
+                        $el.inlineEditor('buttons')
+                           .find('.markdown-info')
+                           .remove();
+                    }
+                    this._scheduleResizeLayout();
                     model.decr('editCount');
                     model.setDraftField(
                         fieldOptions.fieldName,
@@ -543,11 +985,19 @@ RB.ReviewRequestEditorView = Backbone.View.extend({
                             },
                             success: function() {
                                 this._formatField(fieldOptions);
-                                this.$draftBanner.show();
+                                this.showBanner();
                             }
                         }, fieldOptions),
                         this);
-                }, this)
+                }, this),
+                resize: this._checkResizeLayout
+            });
+
+        this.listenTo(
+            this.model,
+            'change:' + editableProp,
+            function(model, editable) {
+                $el.inlineEditor(editable ? 'enable' : 'disable');
             });
     },
 
@@ -600,7 +1050,20 @@ RB.ReviewRequestEditorView = Backbone.View.extend({
                 },
                 url: SITE_ROOT + reviewRequest.get('localSitePrefix') +
                      'api/' + (options.resourceName || options.fieldName) + '/',
-                extraParams: options.extraParams
+                extraParams: options.extraParams,
+                cmp: options.cmp,
+                width: 350,
+                error: function(xhr) {
+                    var text;
+
+                    try {
+                        text = $.parseJSON(xhr.responseText).err.msg;
+                    } catch (e) {
+                        text = 'HTTP ' + xhr.status + ' ' + xhr.statusText;
+                    }
+
+                    alert(text);
+                }
             })
             .on('autocompleteshow', function() {
                 /*
@@ -625,6 +1088,124 @@ RB.ReviewRequestEditorView = Backbone.View.extend({
     },
 
     /*
+     * Wrapper for _resizeLayout that verifies that there's actually a layout
+     * to resize.
+     */
+    _checkResizeLayout: function() {
+        /*
+         * Not every page that uses this has a #review_request_main element
+         * (for instance, review UIs want to have the draft banners but not
+         * the review request box). In this case, just skip all of this.
+         */
+        if (this._$main.length !== 0) {
+            this._resizeLayout();
+        }
+    },
+
+    /*
+     * Resizes the layout in response to size or position changes of fields.
+     *
+     * This will spread out the main text fields to cover the full height of
+     * the review request box's main area. That helps keep a consistent look
+     * and prevents a bunch of wasted-looking space.
+     */
+    _resizeLayout: function() {
+        var $lastContent = this._$main.children('.content:last-child'),
+            $lastEditable = $lastContent.children('.editable'),
+            lastContentTop = $lastContent.position().top,
+            editing = $lastEditable.inlineEditor('editing'),
+            $field = $lastEditable.inlineEditor('field'),
+            editor = $field.data('markdown-editor'),
+            detailsWidth = 300, // Defined as @details-width in reviews.less
+            detailsPadding = 10,
+            $details = $('#review_request_details'),
+            $detailsBody = $details.find('tbody'),
+            $detailsLabels = $detailsBody.find('th:first-child'),
+            $detailsValues = $detailsBody.find('span'),
+            contentHeight,
+            height;
+
+        /*
+         * Make sure that the details fields wrap correctly, even if they don't
+         * have wrappable characters (this combines with the white-space:
+         * word-wrap: break-word style). This computation makes things handle
+         * potentially unknown field labels correctly.
+         */
+        $detailsValues.css('max-width', (detailsWidth -
+                                         $detailsLabels.outerWidth() -
+                                         detailsPadding * 3) + 'px');
+
+        /*
+         * Reset all the heights so we can do calculations based on their
+         * native sizes.
+         */
+        this._$main.height('auto');
+        $lastContent.height('auto');
+        $lastEditable.height('auto');
+
+        if (editor) {
+          editor.setSize(null, 'auto');
+        }
+
+        /*
+         * Set the review request box's main height to take up the full
+         * amount of spaces between its top and the top of the "extra"
+         * pane (where the issue summary table and stuff live).
+         */
+        this._$main.outerHeight(this._$extra.offset().top -
+                                this._$main.offset().top);
+        height = this._$main.height();
+
+        if ($lastContent.outerHeight() + lastContentTop < height) {
+            $lastContent.outerHeight(height - lastContentTop);
+
+            /*
+             * Get the size of the content box, and factor in the padding at
+             * the bottom, to balance out position()'s calculation of the
+             * padding at the top. This ensures we get a height that matches
+             * the content area of the content box.
+             */
+            contentHeight = $lastContent.height() +
+                            $lastContent.getExtents('p', 't');
+
+            /*
+             * Set the height of the editor or the editable field placeholder,
+             * depending on whether we're in edit mode. There's no need to do
+             * both, since this logic will be called again when the state
+             * changes.
+             */
+            if (editing && editor) {
+                editor.setSize(
+                    null,
+                    (contentHeight -
+                     $lastEditable.inlineEditor('buttons').outerHeight(true) -
+                     $field.position().top));
+            } else {
+                /*
+                 * It's possible to squish the editable element if we force
+                 * a size, so make sure it's always at least the natural
+                 * height.
+                 */
+                $lastEditable.outerHeight(
+                    Math.max($lastEditable.outerHeight(true),
+                             contentHeight -
+                             $lastEditable.position().top),
+                    true);
+            }
+        }
+    },
+
+    /*
+     * Schedules a layout resize after the stack unwinds.
+     *
+     * This will only trigger a layout resize after the stack has unwound,
+     * and only once every 100 milliseconds at most.
+     */
+    _scheduleResizeLayout: _.throttle(function() {
+        _.defer(this._checkResizeLayout);
+    }, 100),
+
+    /*
      * Formats the contents of a field.
      *
      * If there's a registered field formatter for this field, it will
@@ -634,7 +1215,13 @@ RB.ReviewRequestEditorView = Backbone.View.extend({
         var formatter = fieldOptions.formatter,
             $el = this.$(fieldOptions.selector),
             reviewRequest = this.model.get('reviewRequest'),
+            value;
+
+        if (fieldOptions.useExtraData) {
+            value = reviewRequest.draft.get('extraData')[fieldOptions.fieldID];
+        } else {
             value = reviewRequest.draft.get(fieldOptions.fieldName);
+        }
 
         if (_.isFunction(formatter)) {
             formatter.call(fieldOptions.context || this, this, value, $el);
@@ -644,74 +1231,20 @@ RB.ReviewRequestEditorView = Backbone.View.extend({
     },
 
     /*
-     * Handler for when the 'editable' property changes.
-     *
-     * Enables or disables all inlineEditors.
-     */
-    _onEditableChanged: function() {
-        this._$box.find('.edit, .editable')
-            .inlineEditor(this.model.get('editable') ? 'enable' : 'disable');
-    },
-
-    /*
-     * Handler for when the Publish Draft button is clicked.
-     *
-     * Begins publishing the review request. If there are any field editors
-     * still open, they'll be saved first.
-     */
-    _onPublishDraftClicked: function() {
-        /* Save all the fields if we need to. */
-        var fields = this.$(".editable:inlineEditorDirty");
-
-        this.model.set({
-            publishing: true,
-            pendingSaveCount: fields.length
-        });
-
-        if (fields.length === 0) {
-            this.model.publishDraft();
-        } else {
-            fields.inlineEditor("save");
-        }
-
-        return false;
-    },
-
-    /*
-     * Handler for when the Discard Draft button is clicked.
-     *
-     * Discards the draft of the review request and relodds the page.
-     */
-    _onDiscardDraftClicked: function() {
-        this.model.get('reviewRequest').draft.destroy({
-            buttons: this.$draftBannerButtons,
-            success: this._refreshPage
-        }, this);
-
-        return false;
-    },
-
-    /*
      * Handler for when Close -> Discarded is clicked.
+     *
+     * The user will be asked for confirmation before the review request is
+     * discarded.
      */
     _onCloseDiscardedClicked: function() {
-        this.model.get('reviewRequest').close({
-            type: RB.ReviewRequest.CLOSE_DISCARDED,
-            buttons: this.$draftBannerButtons,
-            success: this._refreshPage
-        }, this);
+        var confirmText = gettext(
+            "Are you sure you want to discard this review request?");
 
-        return false;
-    },
-
-    /*
-     * Handler for Reopen Review Request.
-     */
-    _onReopenClicked: function() {
-        this.model.get('reviewRequest').reopen({
-            buttons: this.$draftBannerButtons,
-            success: this._refreshPage
-        }, this);
+        if (confirm(confirmText)) {
+            this.model.get('reviewRequest').close({
+                type: RB.ReviewRequest.CLOSE_DISCARDED
+            });
+        }
 
         return false;
     },
@@ -729,16 +1262,14 @@ RB.ReviewRequestEditorView = Backbone.View.extend({
          */
         var submit = true;
 
-        if ($("#draft-banner").is(":visible")) {
+        if (this.banner) {
             submit = confirm(gettext("You have an unpublished draft. If you close this review request, the draft will be discarded. Are you sure you want to close the review request?"));
         }
 
         if (submit) {
             this.model.get('reviewRequest').close({
-                type: RB.ReviewRequest.CLOSE_SUBMITTED,
-                buttons: this.$draftBannerButtons,
-                success: this._refreshPage
-            }, this);
+                type: RB.ReviewRequest.CLOSE_SUBMITTED
+            });
         }
 
         return false;
@@ -760,8 +1291,7 @@ RB.ReviewRequestEditorView = Backbone.View.extend({
                     $('<input type="button" value="' + gettext('Delete') + '"/>')
                         .click(_.bind(function() {
                             this.model.get('reviewRequest').destroy({
-                                buttons: this.$draftBannerButtons.add(
-                                    $("input", dlg.modalBox("buttons"))),
+                                buttons: $("input", dlg.modalBox("buttons")),
                                 success: function() {
                                     window.location = SITE_ROOT;
                                 }
@@ -773,7 +1303,26 @@ RB.ReviewRequestEditorView = Backbone.View.extend({
         return false;
     },
 
+    /*
+     * Handler for Update -> Update Diff.
+     */
+    _onUpdateDiffClicked: function() {
+        var reviewRequest = this.model.get('reviewRequest');
+            updateDiffView = new RB.UpdateDiffView({
+                model: new RB.UploadDiffModel({
+                    changeNumber: reviewRequest.get('commitID'),
+                    repository: reviewRequest.get('repository'),
+                    reviewRequest: reviewRequest
+                })
+            });
+
+        updateDiffView.render();
+    },
+
     _refreshPage: function() {
         window.location = this.model.get('reviewRequest').get('reviewURL');
     }
 });
+
+
+})();

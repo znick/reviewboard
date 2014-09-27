@@ -1,3 +1,6 @@
+from __future__ import unicode_literals
+
+import logging
 import os
 import re
 import subprocess
@@ -85,13 +88,14 @@ class ClearCaseTool(SCMTool):
         if not '@@' in extended_path:
             return HEAD, extended_path
 
-        # Result of regular expression search result is list of tuples.
-        # We must flat this to one list. The best way is use list comprehension.
-        # b is first because it frequently occure in tuples.
-        # Before that remove @@ from path.
+        # Result of regular expression search result is list of tuples. We must
+        # flat this to one list. The best way is use list comprehension. b is
+        # first because it frequently occure in tuples. Before that remove @@
+        # from path.
         unextended_chunks = [
             b or a
-            for a, b, foo in self.UNEXTENDED.findall(extended_path.replace('@@', ''))
+            for a, b, foo in self.UNEXTENDED.findall(
+                extended_path.replace('@@', ''))
         ]
 
         if sys.platform.startswith('win'):
@@ -258,7 +262,8 @@ class ClearCaseTool(SCMTool):
 
         return output
 
-    def parse_diff_revision(self, extended_path, revision_str, *args, **kwargs):
+    def parse_diff_revision(self, extended_path, revision_str,
+                            *args, **kwargs):
         """Guess revision based on extended_path.
 
         Revision is part of file path, called extended-path,
@@ -279,7 +284,9 @@ class ClearCaseTool(SCMTool):
         return ['basedir', 'diff_path']
 
     def get_parser(self, data):
-        return ClearCaseDiffParser(data, self.repopath)
+        return ClearCaseDiffParser(data,
+                                   self.repopath,
+                                   self._get_vobs_tag(self.repopath))
 
 
 class ClearCaseDiffParser(DiffParser):
@@ -289,8 +296,9 @@ class ClearCaseDiffParser(DiffParser):
 
     SPECIAL_REGEX = re.compile(r'^==== (\S+) (\S+) ====$')
 
-    def __init__(self, data, repopath):
+    def __init__(self, data, repopath, vobstag):
         self.repopath = repopath
+        self.vobstag = vobstag
         super(ClearCaseDiffParser, self).__init__(data)
 
     def parse_diff_header(self, linenum, info):
@@ -304,16 +312,41 @@ class ClearCaseDiffParser(DiffParser):
 
         # Because ==== oid oid ==== is present after each header
         # parse standard +++ and --- headers at the first place
-        linenum = super(ClearCaseDiffParser, self).parse_diff_header(linenum, info)
+        linenum = super(ClearCaseDiffParser, self).parse_diff_header(
+            linenum, info)
         m = self.SPECIAL_REGEX.match(self.lines[linenum])
 
         if m:
-            info['origFile'] = self._oid2filename(m.group(1))
-            info['newFile'] = self._oid2filename(m.group(2))
+            # When using ClearCase in multi-site mode, data replication takes
+            # much time, including oid. As said above, oid is used to retrieve
+            # filename path independent of developer view.
+            # When an oid is not found on server side an exception is thrown
+            # and review request submission fails.
+            # However at this time origFile and newFile info have already been
+            # filled by super.parse_diff_header and contain client side paths,
+            # client side paths are enough to start reviewing.
+            # So we can safely catch exception and restore client side paths
+            # if not found.
+            currentFilename = info['origFile']
+            try:
+                info['origFile'] = self._oid2filename(m.group(1))
+            except:
+                logging.debug("oid (%s) not found, get filename from client",
+                              m.group(1))
+                info['origFile'] = self.client_relpath(currentFilename)
+
+            currentFilename = info['newFile']
+            try:
+                info['newFile'] = self._oid2filename(m.group(2))
+            except:
+                logging.debug("oid (%s) not found, get filename from client",
+                              m.group(2))
+                info['newFile'] = self.client_relpath(currentFilename)
+
             linenum += 1
             if (linenum < len(self.lines) and
-                (self.lines[linenum].startswith("Binary files ") or
-                 self.lines[linenum].startswith("Files "))):
+                (self.lines[linenum].startswith(b"Binary files ") or
+                 self.lines[linenum].startswith(b"Files "))):
 
                 # To consider filenames translated from oids
                 # origInfo and newInfo keys must exists.
@@ -350,16 +383,47 @@ class ClearCaseDiffParser(DiffParser):
 
         return ClearCaseTool.relpath(res, self.repopath)
 
+    def client_relpath(self, filename):
+        """Normalize any path sent from client view and return relative path
+        against vobtag
+        """
+
+        try:
+            path, revision = filename.split("@@", 1)
+        except ValueError:
+            path = filename
+            revision = None
+
+        relpath = ""
+        logging.debug("vobstag: %s, path: %s", self.vobstag, path)
+        while True:
+            # An error should be raised if vobstag cannot be reached.
+            if path == "/":
+                logging.debug("vobstag not found in path, use client filename")
+                return filename
+            # Vobstag reach, relpath can be returned.
+            if path.endswith(self.vobstag):
+                break
+            path, basename = os.path.split(path)
+            # Init relpath with basename.
+            if len(relpath) == 0:
+                relpath = basename
+            else:
+                relpath = os.path.join(basename, relpath)
+
+        logging.debug("relpath: %s", relpath)
+
+        if revision:
+            relpath = relpath + "@@" + revision
+        return relpath
 
 class ClearCaseDynamicViewClient(object):
     def __init__(self, path):
         self.path = path
 
     def cat_file(self, filename, revision):
-        f = open(filename, 'r')
-        lines = f.readlines()
-        f.close()
-        return ''.join(lines)
+        with open(filename, 'rb') as f:
+            return f.read()
 
     def list_dir(self, path, revision):
         return ''.join([
@@ -393,9 +457,7 @@ class ClearCaseSnapshotViewClient(object):
             raise FileNotFoundError(extended_path, revision)
 
         try:
-            fp = open(temp.name, 'r')
-            data = fp.read()
-            fp.close()
-            return data
+            with open(temp.name, 'rb') as f:
+                return f.read()
         except:
             raise FileNotFoundError(extended_path, revision)

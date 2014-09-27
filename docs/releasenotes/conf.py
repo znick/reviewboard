@@ -37,13 +37,13 @@ import reviewboard
 
 # Add any Sphinx extension module names here, as strings. They can be extensions
 # coming with Sphinx (named 'sphinx.ext.*') or your custom ones.
-extensions = ['sphinx.ext.intersphinx', 'extralinks']
+extensions = ['sphinx.ext.intersphinx', 'extralinks', 'retina_images']
 
 # Add any paths that contain templates here, relative to this directory.
 templates_path = ['_templates']
 
 # The suffix of source filenames.
-source_suffix = '.txt'
+source_suffix = '.rst'
 
 # The encoding of source files.
 #source_encoding = 'utf-8'
@@ -53,8 +53,8 @@ master_doc = 'index'
 
 # General information about the project.
 project = u'Release Notes'
-copyright = u'2009-2011, Christian Hammond'
-bugtracker_url = 'http://www.reviewboard.org/bugs/%s'
+copyright = u'2009-2014 Beanbag, Inc.'
+bugtracker_url = 'https://www.reviewboard.org/bugs/%s'
 
 # The version info for the project you're documenting, acts as replacement for
 # |version| and |release|, also used in various other places throughout the
@@ -150,7 +150,7 @@ html_static_path = ['_static']
 #html_use_modindex = True
 
 # If false, no index is generated.
-#html_use_index = True
+html_use_index = False
 
 # If true, the index is split into individual pages for each letter.
 #html_split_index = False
@@ -182,7 +182,7 @@ htmlhelp_basename = 'ReleaseNotes'
 # Grouping the document tree into LaTeX files. List of tuples
 # (source start file, target name, title, author, document class [howto/manual]).
 latex_documents = [
-  ('contents', 'ReleaseNotes.tex', ur'Release Notes',
+  ('index', 'ReleaseNotes.tex', ur'Release Notes',
    ur'Christian Hammond', 'manual'),
 ]
 
@@ -205,4 +205,4 @@ latex_documents = [
 
 
 # Example configuration for intersphinx: refer to the Python standard library.
-intersphinx_mapping = {'http://www.reviewboard.org/docs/manual/dev': None}
+intersphinx_mapping = {'https://www.reviewboard.org/docs/manual/dev': None}
